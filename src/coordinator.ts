@@ -31,6 +31,7 @@ import {
   validateMemoHex,
   validateRawTxHex,
   validateRequestId,
+  validateResponseAttemptId,
   validateResponseRawTxHex,
   validateResponseTxid,
   validateUnsignedDecimal,
@@ -229,14 +230,11 @@ function normalizeOutput(
 function parseAttempt(value: unknown): TransactionAttempt {
   const record = asRecord(value, "attempt");
   const state = requireString(record, "state");
-  const attemptId = requireString(record, "attempt_id");
-  validateAttemptId(attemptId);
+  const attemptId = validateResponseAttemptId(requireString(record, "attempt_id"));
   const walletId = requireString(record, "wallet_id");
   validateWalletId(walletId);
-  const approvalReference = requireString(record, "approval_reference");
-  validateApprovalReference(approvalReference);
+  const approvalReference = validateApprovalReference(requireString(record, "approval_reference"));
   const changeAddress = optionalString(record, "change_address");
-  const amountZat = optionalUnsignedDecimal(record, "amount_zat");
   const feeZat = optionalUnsignedDecimal(record, "fee_zat");
   const expiryHeight = optionalNonNegativeInteger(record, "expiry_height");
   const planDigest = optionalDigest(record, "plan_digest");
@@ -258,7 +256,6 @@ function parseAttempt(value: unknown): TransactionAttempt {
     approvalReference,
     state,
     ...(changeAddress === undefined ? {} : { changeAddress }),
-    ...(amountZat === undefined ? {} : { amountZat }),
     ...(feeZat === undefined ? {} : { feeZat }),
     ...(expiryHeight === undefined ? {} : { expiryHeight }),
     ...(planDigest === undefined ? {} : { planDigest }),
@@ -302,7 +299,6 @@ function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
     approvalReference: attempt.approvalReference,
     state: attempt.state as SignedTransaction["state"],
     changeAddress: attempt.changeAddress,
-    ...(attempt.amountZat === undefined ? {} : { amountZat: attempt.amountZat }),
     feeZat: attempt.feeZat,
     expiryHeight: attempt.expiryHeight,
     planDigest: attempt.planDigest,

@@ -54,7 +54,6 @@ export interface TransactionAttempt {
   readonly approvalReference: string;
   readonly state: TransactionAttemptState;
   readonly changeAddress?: string;
-  readonly amountZat?: string;
   readonly feeZat?: string;
   readonly expiryHeight?: number;
   readonly planDigest?: string;
@@ -74,7 +73,6 @@ export interface SignedTransaction {
   readonly approvalReference: string;
   readonly state: "signed" | "broadcast" | "mined" | "orphaned" | "final";
   readonly changeAddress: string;
-  readonly amountZat?: string;
   readonly feeZat: string;
   readonly expiryHeight: number;
   readonly planDigest: string;

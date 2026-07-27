@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-export const ATTEMPT_ID = "attempt-1842-1";
+export const ATTEMPT_ID = "txn_0123456789abcdef0123456789abcdef";
 export const WALLET_ID = "hot-wallet-1";
 export const APPROVAL_REFERENCE = "withdrawal:1842";
 export const TXID = "a".repeat(64);
@@ -21,7 +21,6 @@ export function signedAttempt(overrides = {}) {
   return attempt({
     state: "signed",
     change_address: junoAddress("regtest"),
-    amount_zat: "250000",
     fee_zat: "10000",
     expiry_height: 1_234,
     plan_digest: PLAN_DIGEST,

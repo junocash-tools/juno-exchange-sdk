@@ -26,7 +26,7 @@ const baseUrl = "https://coordinator.example/private/";
 
 test("createAttempt maps exact wire fields, auth, request ID, and bigint amounts", async () => {
   const destination = junoAddress("regtest");
-  const mock = scriptedFetch([jsonResponse(success(attempt({ amount_zat: "250000" })))]);
+  const mock = scriptedFetch([jsonResponse(success(attempt()))]);
   const client = new CoordinatorClient({
     baseUrl,
     authToken: "coordinator-token",
@@ -43,7 +43,6 @@ test("createAttempt maps exact wire fields, auth, request ID, and bigint amounts
   });
 
   assert.equal(result.attemptId, ATTEMPT_ID);
-  assert.equal(result.amountZat, "250000");
   assert.equal(mock.calls.length, 1);
   const [call] = mock.calls;
   assert.equal(call.url, `${baseUrl.slice(0, -1)}/v1/transaction-attempts`);
@@ -122,7 +121,6 @@ test("createRawTransaction polls until a complete signed result is available", a
     approvalReference: APPROVAL_REFERENCE,
     state: "signed",
     changeAddress: junoAddress("regtest"),
-    amountZat: "250000",
     feeZat: "10000",
     expiryHeight: 1_234,
     planDigest: PLAN_DIGEST,
@@ -374,6 +372,62 @@ test("strict validation rejects unsafe amount types, non-canonical amounts, memo
     },
   );
   assert.equal(mock.calls.length, 0);
+});
+
+test("attempt IDs and approval references follow the coordinator contract", async () => {
+  const approvalReference = "ops approval #1842 (desk α)";
+  const destination = junoAddress();
+  const mock = scriptedFetch([jsonResponse(success(attempt({ approval_reference: approvalReference })))]);
+  const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
+
+  const result = await client.createAttempt({
+    idempotencyKey: "approval-reference-1",
+    walletId: WALLET_ID,
+    approvalReference,
+    outputs: [{ toAddress: destination, amountZat: "250000" }],
+  });
+  assert.equal(result.approvalReference, approvalReference);
+  assert.equal(requestJson(mock.calls[0]).approval_reference, approvalReference);
+
+  await assert.rejects(client.status("attempt-1842-1"), (error) => {
+    assert.ok(isExchangeSdkError(error));
+    assert.equal(error.code, "invalid_argument");
+    return true;
+  });
+  await assert.rejects(
+    client.createAttempt({
+      idempotencyKey: "approval-reference-oversize-1",
+      walletId: WALLET_ID,
+      approvalReference: "💰".repeat(33),
+      outputs: [{ toAddress: destination, amountZat: "250000" }],
+    }),
+    (error) => {
+      assert.ok(isExchangeSdkError(error));
+      assert.equal(error.code, "invalid_argument");
+      return true;
+    },
+  );
+});
+
+test("malformed attempt IDs in coordinator responses fail closed", async () => {
+  const mock = scriptedFetch([
+    jsonResponse(success(attempt({ attempt_id: "attempt-1842-1" }))),
+  ]);
+  const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
+
+  await assert.rejects(
+    client.createAttempt({
+      idempotencyKey: "malformed-attempt-response-1",
+      walletId: WALLET_ID,
+      approvalReference: APPROVAL_REFERENCE,
+      outputs: [{ toAddress: junoAddress(), amountZat: "250000" }],
+    }),
+    (error) => {
+      assert.ok(isExchangeSdkError(error));
+      assert.equal(error.code, "invalid_response");
+      return true;
+    },
+  );
 });
 
 test("signed state is rejected when reconciliation fields are incomplete", async () => {

@@ -7,10 +7,10 @@ The SDK does not hold keys, scan the chain, select notes, calculate fees, or sig
 ## Install
 
 ```sh
-npm install @junocash-tools/exchange-sdk
+npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.1.0/junocash-tools-exchange-sdk-0.1.0.tgz
 ```
 
-Node.js 20 or later is required. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
+Node.js 20 or later is required. The versioned GitHub Release archive is the supported public distribution. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
 
 ## Create a raw transaction
 

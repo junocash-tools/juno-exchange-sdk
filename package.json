@@ -7,7 +7,7 @@
     "type": "git",
     "url": "git+https://github.com/junocash-tools/juno-exchange-sdk.git"
   },
-  "homepage": "https://junocash-tools.github.io/juno-exchange-gateway/transactions/automation/",
+  "homepage": "https://junocash-tools.github.io/juno-exchange-gateway/transactions/build-sign-broadcast/",
   "bugs": {
     "url": "https://github.com/junocash-tools/juno-exchange-sdk/issues"
   },

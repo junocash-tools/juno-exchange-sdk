@@ -4,8 +4,7 @@ import type { JunoNetwork, ZatoshiAmount } from "./types.js";
 const walletIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 const requestIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const attemptIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const approvalReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+const attemptIdPattern = /^txn_[0-9a-f]{32}$/;
 const lowerHex64Pattern = /^[0-9a-f]{64}$/;
 const canonicalPositiveIntegerPattern = /^[1-9][0-9]*$/;
 const canonicalUnsignedIntegerPattern = /^(0|[1-9][0-9]*)$/;
@@ -75,6 +74,13 @@ export function validateAttemptId(value: unknown): string {
   return result;
 }
 
+export function validateResponseAttemptId(value: unknown): string {
+  if (typeof value !== "string" || !attemptIdPattern.test(value)) {
+    throw invalidResponse("attempt_id must match txn_ followed by 32 lowercase hexadecimal characters");
+  }
+  return value;
+}
+
 export function validateIdempotencyKey(value: unknown): string {
   if (typeof value !== "string") throw invalidArgument("idempotencyKey is invalid");
   const result = value.trim();
@@ -87,7 +93,7 @@ export function validateIdempotencyKey(value: unknown): string {
 export function validateApprovalReference(value: unknown): string {
   if (typeof value !== "string") throw invalidArgument("approvalReference is invalid");
   const result = value.trim();
-  if (!approvalReferencePattern.test(result)) {
+  if (result === "" || new TextEncoder().encode(result).byteLength > 128) {
     throw invalidArgument("approvalReference is invalid");
   }
   return result;
