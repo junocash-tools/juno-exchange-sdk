@@ -235,6 +235,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
   validateWalletId(walletId);
   const approvalReference = requireString(record, "approval_reference");
   validateApprovalReference(approvalReference);
+  const changeAddress = optionalString(record, "change_address");
   const amountZat = optionalUnsignedDecimal(record, "amount_zat");
   const feeZat = optionalUnsignedDecimal(record, "fee_zat");
   const expiryHeight = optionalNonNegativeInteger(record, "expiry_height");
@@ -256,6 +257,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
     walletId,
     approvalReference,
     state,
+    ...(changeAddress === undefined ? {} : { changeAddress }),
     ...(amountZat === undefined ? {} : { amountZat }),
     ...(feeZat === undefined ? {} : { feeZat }),
     ...(expiryHeight === undefined ? {} : { expiryHeight }),
@@ -274,6 +276,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
 function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
   if (
     !signedMaterialStates.has(attempt.state) ||
+    attempt.changeAddress === undefined ||
     attempt.feeZat === undefined ||
     attempt.expiryHeight === undefined ||
     attempt.planDigest === undefined ||
@@ -298,6 +301,7 @@ function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
     walletId: attempt.walletId,
     approvalReference: attempt.approvalReference,
     state: attempt.state as SignedTransaction["state"],
+    changeAddress: attempt.changeAddress,
     ...(attempt.amountZat === undefined ? {} : { amountZat: attempt.amountZat }),
     feeZat: attempt.feeZat,
     expiryHeight: attempt.expiryHeight,

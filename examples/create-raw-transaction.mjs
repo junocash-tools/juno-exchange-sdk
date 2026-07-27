@@ -30,6 +30,7 @@ if (!approvalReference || !toAddress || !amountZat) {
         walletId: signed.walletId,
         approvalReference: signed.approvalReference,
         state: signed.state,
+        changeAddress: signed.changeAddress,
         txid: signed.txid,
         rawTxHex: signed.rawTxHex,
         feeZat: signed.feeZat,

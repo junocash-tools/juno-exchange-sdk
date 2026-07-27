@@ -35,6 +35,7 @@ await withdrawals.save({
   attemptId: signed.attemptId,
   txid: signed.txid,
   rawTxHex: signed.rawTxHex,
+  changeAddress: signed.changeAddress,
   feeZat: signed.feeZat,
   expiryHeight: signed.expiryHeight,
   planDigest: signed.planDigest,

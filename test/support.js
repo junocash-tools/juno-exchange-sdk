@@ -20,6 +20,7 @@ export function attempt(overrides = {}) {
 export function signedAttempt(overrides = {}) {
   return attempt({
     state: "signed",
+    change_address: junoAddress("regtest"),
     amount_zat: "250000",
     fee_zat: "10000",
     expiry_height: 1_234,

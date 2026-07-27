@@ -121,6 +121,7 @@ test("createRawTransaction polls until a complete signed result is available", a
     walletId: WALLET_ID,
     approvalReference: APPROVAL_REFERENCE,
     state: "signed",
+    changeAddress: junoAddress("regtest"),
     amountZat: "250000",
     feeZat: "10000",
     expiryHeight: 1_234,

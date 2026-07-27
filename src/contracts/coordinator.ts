@@ -53,6 +53,7 @@ export interface TransactionAttempt {
   readonly walletId: string;
   readonly approvalReference: string;
   readonly state: TransactionAttemptState;
+  readonly changeAddress?: string;
   readonly amountZat?: string;
   readonly feeZat?: string;
   readonly expiryHeight?: number;
@@ -72,6 +73,7 @@ export interface SignedTransaction {
   readonly walletId: string;
   readonly approvalReference: string;
   readonly state: "signed" | "broadcast" | "mined" | "orphaned" | "final";
+  readonly changeAddress: string;
   readonly amountZat?: string;
   readonly feeZat: string;
   readonly expiryHeight: number;
