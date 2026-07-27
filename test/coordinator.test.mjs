@@ -430,6 +430,31 @@ test("malformed attempt IDs in coordinator responses fail closed", async () => {
   );
 });
 
+test("required response metadata and positive expiry heights fail closed", async () => {
+  for (const response of [
+    { status: "ok", data: attempt() },
+    success(attempt({ created_at: undefined })),
+    success(attempt({ updated_at: "not-a-timestamp" })),
+    success(signedAttempt({ expiry_height: 0 })),
+  ]) {
+    const mock = scriptedFetch([jsonResponse(response)]);
+    const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
+    await assert.rejects(
+      client.createAttempt({
+        idempotencyKey: "malformed-response-metadata-1",
+        walletId: WALLET_ID,
+        approvalReference: APPROVAL_REFERENCE,
+        outputs: [{ toAddress: junoAddress(), amountZat: "250000" }],
+      }),
+      (error) => {
+        assert.ok(isExchangeSdkError(error));
+        assert.equal(error.code, "invalid_response");
+        return true;
+      },
+    );
+  }
+});
+
 test("signed state is rejected when reconciliation fields are incomplete", async () => {
   const incomplete = signedAttempt();
   delete incomplete.orchard_output_action_indices;

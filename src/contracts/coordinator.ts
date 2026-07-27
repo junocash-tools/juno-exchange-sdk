@@ -63,8 +63,8 @@ export interface TransactionAttempt {
   readonly orchardOutputActionIndices?: readonly number[];
   readonly orchardChangeActionIndex?: number | null;
   readonly error?: TransactionAttemptError;
-  readonly createdAt?: string;
-  readonly updatedAt?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface SignedTransaction {

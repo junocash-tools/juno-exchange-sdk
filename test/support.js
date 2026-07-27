@@ -13,6 +13,8 @@ export function attempt(overrides = {}) {
     wallet_id: WALLET_ID,
     approval_reference: APPROVAL_REFERENCE,
     state: "planning",
+    created_at: "2026-07-27T12:00:00Z",
+    updated_at: "2026-07-27T12:00:00Z",
     ...overrides,
   };
 }

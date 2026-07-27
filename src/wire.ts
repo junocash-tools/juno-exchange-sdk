@@ -2,7 +2,7 @@ import { asRecord, invalidResponse } from "./validation.js";
 
 export interface SuccessEnvelope {
   readonly data: Record<string, unknown>;
-  readonly requestId?: string;
+  readonly requestId: string;
 }
 
 export function unwrapSuccessEnvelope(payload: unknown): SuccessEnvelope {
@@ -12,11 +12,8 @@ export function unwrapSuccessEnvelope(payload: unknown): SuccessEnvelope {
   }
   const data = asRecord(envelope.data, "data");
   const requestId = envelope.request_id;
-  if (requestId !== undefined && (typeof requestId !== "string" || requestId.trim() === "")) {
-    throw invalidResponse("request_id must be a non-empty string when present");
+  if (typeof requestId !== "string" || requestId.trim() === "") {
+    throw invalidResponse("request_id must be a non-empty string");
   }
-  return {
-    data,
-    ...(requestId === undefined ? {} : { requestId }),
-  };
+  return { data, requestId };
 }

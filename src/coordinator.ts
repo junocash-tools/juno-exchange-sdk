@@ -237,6 +237,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
   const changeAddress = optionalString(record, "change_address");
   const feeZat = optionalUnsignedDecimal(record, "fee_zat");
   const expiryHeight = optionalNonNegativeInteger(record, "expiry_height");
+  if (expiryHeight === 0) throw invalidResponse("expiry_height must be a positive safe integer when present");
   const planDigest = optionalDigest(record, "plan_digest");
   const selectedNoteIds = optionalNoteIds(record, "selected_note_ids");
   const txidValue = record.txid;
@@ -247,8 +248,8 @@ function parseAttempt(value: unknown): TransactionAttempt {
   const outputIndices = optionalIndices(record, "orchard_output_action_indices");
   const changeIndex = optionalNullableIndex(record, "orchard_change_action_index");
   const attemptError = optionalAttemptError(record.error);
-  const createdAt = optionalString(record, "created_at");
-  const updatedAt = optionalString(record, "updated_at");
+  const createdAt = requireTimestamp(record, "created_at");
+  const updatedAt = requireTimestamp(record, "updated_at");
 
   return {
     attemptId,
@@ -265,8 +266,8 @@ function parseAttempt(value: unknown): TransactionAttempt {
     ...(outputIndices === undefined ? {} : { orchardOutputActionIndices: outputIndices }),
     ...(changeIndex === undefined ? {} : { orchardChangeActionIndex: changeIndex }),
     ...(attemptError === undefined ? {} : { error: attemptError }),
-    ...(createdAt === undefined ? {} : { createdAt }),
-    ...(updatedAt === undefined ? {} : { updatedAt }),
+    createdAt,
+    updatedAt,
   };
 }
 
@@ -379,8 +380,8 @@ function optionalIndices(
 ): readonly number[] | undefined {
   const value = record[key];
   if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value) || value.length > 200) {
-    throw invalidResponse(`${key} must be an array with at most 200 entries`);
+  if (!Array.isArray(value) || value.length > 199) {
+    throw invalidResponse(`${key} must be an array with at most 199 entries`);
   }
   const seen = new Set<number>();
   return value.map((entry) => {
@@ -396,6 +397,17 @@ function optionalIndices(
     seen.add(entry);
     return entry;
   });
+}
+
+function requireTimestamp(record: Record<string, unknown>, key: string): string {
+  const value = requireString(record, key);
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw invalidResponse(`${key} must be an RFC 3339 timestamp`);
+  }
+  return value;
 }
 
 function optionalNullableIndex(
