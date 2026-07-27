@@ -166,6 +166,16 @@ node examples/create-raw-transaction.mjs \
 
 The example writes one JSON object containing the signed hex and reconciliation metadata. Redirect it only to an access-controlled location.
 
+Broadcast that saved object with the second runnable example:
+
+```sh
+export JUNO_GATEWAY_URL=https://gateway.example
+export JUNO_GATEWAY_TOKEN=replace-with-broadcast-token
+export JUNO_BROADCAST_IDEMPOTENCY_KEY=withdrawal-1842-broadcast-1
+
+node examples/broadcast-raw-transaction.mjs signed-transaction.json
+```
+
 ## Development
 
 ```sh

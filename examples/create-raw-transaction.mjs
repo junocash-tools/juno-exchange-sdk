@@ -27,11 +27,15 @@ if (!approvalReference || !toAddress || !amountZat) {
     process.stdout.write(
       `${JSON.stringify({
         attemptId: signed.attemptId,
+        walletId: signed.walletId,
+        approvalReference: signed.approvalReference,
+        state: signed.state,
         txid: signed.txid,
         rawTxHex: signed.rawTxHex,
         feeZat: signed.feeZat,
         expiryHeight: signed.expiryHeight,
         planDigest: signed.planDigest,
+        selectedNoteIds: signed.selectedNoteIds,
         orchardOutputActionIndices: signed.orchardOutputActionIndices,
         orchardChangeActionIndex: signed.orchardChangeActionIndex,
       })}\n`,
