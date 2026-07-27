@@ -98,7 +98,7 @@ const cancelled = await coordinator.cancelAttempt(attempt.attemptId);
 
 `createRawTransaction` calls `createAttempt`, then polls `status` until `signed`. Its default wait is 10 minutes with one-second polling. A local wait timeout does not cancel the server-side attempt. Store `attemptId` and query it again. Cancel explicitly only when exchange policy requires it.
 
-Common states are `planning`, `reserved`, `signing`, `signed`, `failed`, `cancelled`, and `signing_unknown`. Treat `signing_unknown` as a manual-reconciliation state: do not create a replacement spend until the coordinator resolves whether signing completed.
+Common states are `planning`, `reserved`, `signing`, `signing_unknown`, `signed`, `broadcast`, `mined`, `final`, `failed_unsigned`, `expired_pending_reconciliation`, `orphaned`, `released`, and `cancelled`. The client keeps polling through `signing_unknown`; if the local wait times out, query the same attempt later and never create a replacement spend until the coordinator resolves it.
 
 ## Idempotency and retries
 

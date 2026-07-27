@@ -135,7 +135,7 @@ test("createRawTransaction polls until a complete signed result is available", a
 });
 
 test("createRawTransaction reports terminal attempt states without broadcasting", async () => {
-  const mock = scriptedFetch([jsonResponse(success(attempt({ state: "signing_unknown" })))]);
+  const mock = scriptedFetch([jsonResponse(success(attempt({ state: "failed_unsigned" })))]);
   const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
 
   await assert.rejects(
@@ -148,9 +148,9 @@ test("createRawTransaction reports terminal attempt states without broadcasting"
     }),
     (error) => {
       assert.ok(error instanceof ExchangeSdkError);
-      assert.equal(error.code, "transaction_attempt_signing_unknown");
+      assert.equal(error.code, "transaction_attempt_failed_unsigned");
       assert.equal(error.retryable, false);
-      assert.deepEqual(error.details, { attempt_id: ATTEMPT_ID, state: "signing_unknown" });
+      assert.deepEqual(error.details, { attempt_id: ATTEMPT_ID, state: "failed_unsigned" });
       return true;
     },
   );

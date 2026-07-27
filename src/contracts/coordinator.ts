@@ -8,12 +8,13 @@ export type KnownTransactionAttemptState =
   | "signing"
   | "signed"
   | "broadcast"
-  | "mempool"
-  | "confirmed"
+	| "mined"
+	| "final"
   | "cancelled"
-  | "expired"
-  | "failed"
-  | "rejected"
+	| "failed_unsigned"
+	| "expired_pending_reconciliation"
+	| "orphaned"
+	| "released"
   | "signing_unknown";
 
 export type TransactionAttemptState = KnownTransactionAttemptState | (string & {});

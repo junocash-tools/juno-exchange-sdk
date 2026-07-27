@@ -44,10 +44,10 @@ export interface CoordinatorClientOptions extends ClientOptions {
 
 const terminalFailureStates = new Set([
   "failed",
+	"failed_unsigned",
   "cancelled",
   "expired",
   "rejected",
-  "signing_unknown",
 ]);
 
 export class CoordinatorClient {
@@ -312,8 +312,8 @@ function optionalUnsignedDecimal(
 function optionalDigest(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
-    throw invalidResponse(`${key} must be a 64-character lowercase hexadecimal digest`);
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+	throw invalidResponse(`${key} must use sha256 followed by a 64-character lowercase hexadecimal digest`);
   }
   return value;
 }

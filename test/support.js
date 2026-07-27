@@ -4,7 +4,7 @@ export const ATTEMPT_ID = "attempt-1842-1";
 export const WALLET_ID = "hot-wallet-1";
 export const APPROVAL_REFERENCE = "withdrawal:1842";
 export const TXID = "a".repeat(64);
-export const PLAN_DIGEST = "b".repeat(64);
+export const PLAN_DIGEST = `sha256:${"b".repeat(64)}`;
 export const NOTE_ID = `${"c".repeat(64)}:0`;
 
 export function attempt(overrides = {}) {
