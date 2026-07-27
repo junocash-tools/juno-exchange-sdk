@@ -3,21 +3,26 @@ import type { PollOptions, RequestOptions, ZatoshiAmount } from "../types.js";
 export type KnownTransactionAttemptState =
   | "planning"
   | "reserved"
-  | "awaiting_approval"
-  | "awaiting_external_signature"
   | "signing"
+  | "signing_unknown"
   | "signed"
   | "broadcast"
-	| "mined"
-	| "final"
+  | "mined"
+  | "expired_pending_reconciliation"
+  | "orphaned"
+  | "final"
+  | "released"
   | "cancelled"
-	| "failed_unsigned"
-	| "expired_pending_reconciliation"
-	| "orphaned"
-	| "released"
-  | "signing_unknown";
+  | "failed_unsigned";
 
 export type TransactionAttemptState = KnownTransactionAttemptState | (string & {});
+
+export interface TransactionAttemptError {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
 
 export interface TransactionOutputInput {
   readonly toAddress: string;
@@ -57,6 +62,7 @@ export interface TransactionAttempt {
   readonly rawTxHex?: string;
   readonly orchardOutputActionIndices?: readonly number[];
   readonly orchardChangeActionIndex?: number | null;
+  readonly error?: TransactionAttemptError;
   readonly createdAt?: string;
   readonly updatedAt?: string;
 }
@@ -65,7 +71,7 @@ export interface SignedTransaction {
   readonly attemptId: string;
   readonly walletId: string;
   readonly approvalReference: string;
-  readonly state: "signed";
+  readonly state: "signed" | "broadcast" | "mined" | "orphaned" | "final";
   readonly amountZat?: string;
   readonly feeZat: string;
   readonly expiryHeight: number;

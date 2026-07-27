@@ -96,7 +96,9 @@ const current = await coordinator.status(attempt.attemptId);
 const cancelled = await coordinator.cancelAttempt(attempt.attemptId);
 ```
 
-`createRawTransaction` calls `createAttempt`, then polls `status` until `signed`. Its default wait is 10 minutes with one-second polling. A local wait timeout does not cancel the server-side attempt. Store `attemptId` and query it again. Cancel explicitly only when exchange policy requires it.
+`createRawTransaction` calls `createAttempt`, then polls `status` until signed material is durable. Its default wait is 10 minutes with one-second polling. An idempotent replay also returns that material if the attempt has already reached `broadcast`, `mined`, `orphaned`, or `final`. It rejects expired or released material because that raw transaction is no longer safe to submit.
+
+A local wait timeout does not cancel the server-side attempt. Store `attemptId` and query it again. Cancel explicitly only when exchange policy requires it.
 
 Common states are `planning`, `reserved`, `signing`, `signing_unknown`, `signed`, `broadcast`, `mined`, `final`, `failed_unsigned`, `expired_pending_reconciliation`, `orphaned`, `released`, and `cancelled`. The client keeps polling through `signing_unknown`; if the local wait times out, query the same attempt later and never create a replacement spend until the coordinator resolves it.
 
@@ -129,7 +131,7 @@ try {
 }
 ```
 
-Errors retain the API status, stable code, retry flag, request ID, and structured details. They never expose an authorization token or raw response body.
+Errors retain the API status, stable code, retry flag, request ID, and structured details. Attempt status objects also expose the coordinator's structured `error` when present. They never expose an authorization token or raw response body.
 
 ## Authentication and logging
 

@@ -42,12 +42,19 @@ export interface CoordinatorClientOptions extends ClientOptions {
   readonly paths?: CoordinatorPaths;
 }
 
+const signedMaterialStates = new Set([
+  "signed",
+  "broadcast",
+  "mined",
+  "orphaned",
+  "final",
+]);
+
 const terminalFailureStates = new Set([
-  "failed",
-	"failed_unsigned",
+  "failed_unsigned",
   "cancelled",
-  "expired",
-  "rejected",
+  "expired_pending_reconciliation",
+  "released",
 ]);
 
 export class CoordinatorClient {
@@ -153,7 +160,7 @@ export class CoordinatorClient {
     );
 
     for (;;) {
-      if (attempt.state === "signed") return toSignedTransaction(attempt);
+      if (signedMaterialStates.has(attempt.state)) return toSignedTransaction(attempt);
       if (terminalFailureStates.has(attempt.state)) throw terminalAttemptError(attempt);
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) throw waitTimeoutError(attempt.attemptId);
@@ -185,8 +192,8 @@ function normalizeCreateInput(
   input: CreateTransactionAttemptInput,
   network: ClientOptions["network"],
 ): NormalizedCreateInput {
-  if (!Array.isArray(input.outputs) || input.outputs.length < 1 || input.outputs.length > 200) {
-    throw invalidArgument("outputs must contain between 1 and 200 entries");
+  if (!Array.isArray(input.outputs) || input.outputs.length < 1 || input.outputs.length > 199) {
+    throw invalidArgument("outputs must contain between 1 and 199 entries");
   }
   const requestId = validateRequestId(input.requestId);
   const outputs = input.outputs.map((output, index) => normalizeOutput(output, index, network));
@@ -240,6 +247,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
     rawTxValue === undefined || rawTxValue === null ? undefined : validateResponseRawTxHex(rawTxValue);
   const outputIndices = optionalIndices(record, "orchard_output_action_indices");
   const changeIndex = optionalNullableIndex(record, "orchard_change_action_index");
+  const attemptError = optionalAttemptError(record.error);
   const createdAt = optionalString(record, "created_at");
   const updatedAt = optionalString(record, "updated_at");
 
@@ -257,6 +265,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
     ...(rawTxHex === undefined ? {} : { rawTxHex }),
     ...(outputIndices === undefined ? {} : { orchardOutputActionIndices: outputIndices }),
     ...(changeIndex === undefined ? {} : { orchardChangeActionIndex: changeIndex }),
+    ...(attemptError === undefined ? {} : { error: attemptError }),
     ...(createdAt === undefined ? {} : { createdAt }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
   };
@@ -264,7 +273,7 @@ function parseAttempt(value: unknown): TransactionAttempt {
 
 function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
   if (
-    attempt.state !== "signed" ||
+    !signedMaterialStates.has(attempt.state) ||
     attempt.feeZat === undefined ||
     attempt.expiryHeight === undefined ||
     attempt.planDigest === undefined ||
@@ -272,12 +281,12 @@ function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
     attempt.txid === undefined ||
     attempt.rawTxHex === undefined ||
     attempt.orchardOutputActionIndices === undefined ||
-    attempt.orchardOutputActionIndices.length !== 1 ||
-    attempt.orchardChangeActionIndex === undefined
+    attempt.orchardOutputActionIndices.length !== 1
   ) {
     throw invalidResponse("signed attempt is missing required signed transaction fields");
   }
   if (
+    attempt.orchardChangeActionIndex !== undefined &&
     attempt.orchardChangeActionIndex !== null &&
     attempt.orchardOutputActionIndices.includes(attempt.orchardChangeActionIndex)
   ) {
@@ -288,7 +297,7 @@ function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
     attemptId: attempt.attemptId,
     walletId: attempt.walletId,
     approvalReference: attempt.approvalReference,
-    state: "signed",
+    state: attempt.state as SignedTransaction["state"],
     ...(attempt.amountZat === undefined ? {} : { amountZat: attempt.amountZat }),
     feeZat: attempt.feeZat,
     expiryHeight: attempt.expiryHeight,
@@ -297,8 +306,30 @@ function toSignedTransaction(attempt: TransactionAttempt): SignedTransaction {
     txid: attempt.txid,
     rawTxHex: attempt.rawTxHex,
     orchardOutputActionIndices: attempt.orchardOutputActionIndices,
-    orchardChangeActionIndex: attempt.orchardChangeActionIndex,
+    orchardChangeActionIndex: attempt.orchardChangeActionIndex ?? null,
   };
+}
+
+function optionalAttemptError(value: unknown): TransactionAttempt["error"] {
+  if (value === undefined || value === null) return undefined;
+  const record = asRecord(value, "attempt error");
+  const code = requireString(record, "code");
+  const message = requireString(record, "message");
+  const retryableValue = record.retryable;
+  if (typeof retryableValue !== "boolean") {
+    throw invalidResponse("attempt error retryable must be a boolean");
+  }
+  const detailsValue = record.details;
+  let details: Readonly<Record<string, unknown>> | undefined;
+  if (detailsValue !== undefined && detailsValue !== null) {
+    details = Object.freeze({ ...asRecord(detailsValue, "attempt error details") });
+  }
+  return Object.freeze({
+    code,
+    message,
+    retryable: retryableValue,
+    ...(details === undefined ? {} : { details }),
+  });
 }
 
 function optionalUnsignedDecimal(
@@ -393,12 +424,19 @@ function requestOptions(options: CreateRawTransactionOptions): GetAttemptOptions
 }
 
 function terminalAttemptError(attempt: TransactionAttempt): ExchangeSdkError {
-  return new ExchangeSdkError(`Transaction attempt entered terminal state ${attempt.state}`, {
-    code: `transaction_attempt_${attempt.state}`,
-    retryable: false,
-    details: { attempt_id: attempt.attemptId, state: attempt.state },
-    operation: "coordinator.create_raw_transaction",
-  });
+  return new ExchangeSdkError(
+    attempt.error?.message ?? `Transaction attempt entered terminal state ${attempt.state}`,
+    {
+      code: `transaction_attempt_${attempt.state}`,
+      retryable: attempt.error?.retryable ?? false,
+      details: {
+        attempt_id: attempt.attemptId,
+        state: attempt.state,
+        ...(attempt.error === undefined ? {} : { attempt_error: attempt.error }),
+      },
+      operation: "coordinator.create_raw_transaction",
+    },
+  );
 }
 
 function waitTimeoutError(attemptId: string): ExchangeSdkError {

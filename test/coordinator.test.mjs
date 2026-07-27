@@ -135,7 +135,14 @@ test("createRawTransaction polls until a complete signed result is available", a
 });
 
 test("createRawTransaction reports terminal attempt states without broadcasting", async () => {
-  const mock = scriptedFetch([jsonResponse(success(attempt({ state: "failed_unsigned" })))]);
+  const attemptError = {
+    code: "insufficient_balance",
+    message: "the hot wallet has insufficient spendable balance",
+    retryable: false,
+  };
+  const mock = scriptedFetch([
+    jsonResponse(success(attempt({ state: "failed_unsigned", error: attemptError }))),
+  ]);
   const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
 
   await assert.rejects(
@@ -150,7 +157,57 @@ test("createRawTransaction reports terminal attempt states without broadcasting"
       assert.ok(error instanceof ExchangeSdkError);
       assert.equal(error.code, "transaction_attempt_failed_unsigned");
       assert.equal(error.retryable, false);
-      assert.deepEqual(error.details, { attempt_id: ATTEMPT_ID, state: "failed_unsigned" });
+      assert.equal(error.message, attemptError.message);
+      assert.deepEqual(error.details, {
+        attempt_id: ATTEMPT_ID,
+        state: "failed_unsigned",
+        attempt_error: attemptError,
+      });
+      return true;
+    },
+  );
+  assert.equal(mock.calls.length, 1);
+});
+
+test("createRawTransaction replays durable signed material after broadcast", async () => {
+  const mock = scriptedFetch([
+    jsonResponse(
+      success(signedAttempt({ state: "broadcast", orchard_change_action_index: undefined })),
+    ),
+  ]);
+  const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
+
+  const result = await client.createRawTransaction({
+    idempotencyKey: "withdrawal-broadcast-replay-1",
+    walletId: WALLET_ID,
+    approvalReference: APPROVAL_REFERENCE,
+    toAddress: junoAddress(),
+    amountZat: "250000",
+  });
+
+  assert.equal(result.state, "broadcast");
+  assert.equal(result.rawTxHex, "00aabbcc");
+  assert.equal(result.orchardChangeActionIndex, null);
+  assert.equal(mock.calls.length, 1);
+});
+
+test("createRawTransaction rejects expired signed material", async () => {
+  const mock = scriptedFetch([
+    jsonResponse(success(signedAttempt({ state: "expired_pending_reconciliation" }))),
+  ]);
+  const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
+
+  await assert.rejects(
+    client.createRawTransaction({
+      idempotencyKey: "withdrawal-expired-replay-1",
+      walletId: WALLET_ID,
+      approvalReference: APPROVAL_REFERENCE,
+      toAddress: junoAddress(),
+      amountZat: "250000",
+    }),
+    (error) => {
+      assert.ok(isExchangeSdkError(error));
+      assert.equal(error.code, "transaction_attempt_expired_pending_reconciliation");
       return true;
     },
   );

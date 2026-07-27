@@ -18,6 +18,7 @@ export type {
   KnownTransactionAttemptState,
   SignedTransaction,
   TransactionAttempt,
+  TransactionAttemptError,
   TransactionAttemptState,
   TransactionOutputInput,
 } from "./contracts/coordinator.js";
