@@ -20,6 +20,8 @@ export interface HttpRequest {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly retryMode: RetryMode;
+  /** JSON integer fields that must be decoded as exact decimal strings. */
+  readonly losslessIntegerKeys?: readonly string[];
 }
 
 const defaults = Object.freeze({
@@ -185,7 +187,12 @@ export class HttpClient {
       const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
       let payload: unknown;
       try {
-        payload = await readJsonResponse(response, this.#maxResponseBytes, request.operation);
+        payload = await readJsonResponse(
+          response,
+          this.#maxResponseBytes,
+          request.operation,
+          request.losslessIntegerKeys,
+        );
       } catch (cause) {
         if (isExchangeSdkError(cause)) throw cause;
         if (timedOut) {
@@ -284,6 +291,7 @@ async function readJsonResponse(
   response: Response,
   maxResponseBytes: number,
   operation: string,
+  losslessIntegerKeys: readonly string[] | undefined,
 ): Promise<unknown> {
   const contentLength = response.headers.get("Content-Length");
   if (contentLength !== null) {
@@ -298,7 +306,7 @@ async function readJsonResponse(
   }
   if (text.trim() === "") return undefined;
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(preserveIntegerFields(text, losslessIntegerKeys)) as unknown;
   } catch (cause) {
     throw new ExchangeSdkError("Juno API returned invalid JSON", {
       code: "invalid_response",
@@ -308,6 +316,72 @@ async function readJsonResponse(
       cause,
     });
   }
+}
+
+function preserveIntegerFields(text: string, keys: readonly string[] | undefined): string {
+  if (keys === undefined || keys.length === 0) return text;
+  const selected = new Set(keys);
+  let output = "";
+  let copiedThrough = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    if (text[index] !== '"') {
+      index += 1;
+      continue;
+    }
+    const stringEnd = jsonStringEnd(text, index);
+    if (stringEnd < 0) return text;
+    const rawKey = text.slice(index + 1, stringEnd);
+    let colon = stringEnd + 1;
+    while (isJsonWhitespace(text[colon])) colon += 1;
+    if (!rawKey.includes("\\") && selected.has(rawKey) && text[colon] === ":") {
+      let valueStart = colon + 1;
+      while (isJsonWhitespace(text[valueStart])) valueStart += 1;
+      let valueEnd = valueStart;
+      if (text[valueEnd] === "-") valueEnd += 1;
+      const digitsStart = valueEnd;
+      while (isAsciiDigit(text[valueEnd])) valueEnd += 1;
+      if (
+        valueEnd > digitsStart &&
+        (text[valueEnd] === "," ||
+          text[valueEnd] === "}" ||
+          text[valueEnd] === "]" ||
+          isJsonWhitespace(text[valueEnd]) ||
+          valueEnd === text.length)
+      ) {
+        output += `${text.slice(copiedThrough, valueStart)}"${text.slice(valueStart, valueEnd)}"`;
+        copiedThrough = valueEnd;
+        index = valueEnd;
+        continue;
+      }
+    }
+    index = stringEnd + 1;
+  }
+  return copiedThrough === 0 ? text : output + text.slice(copiedThrough);
+}
+
+function jsonStringEnd(text: string, start: number): number {
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === '"') {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isAsciiDigit(value: string | undefined): boolean {
+  return value !== undefined && value >= "0" && value <= "9";
+}
+
+function isJsonWhitespace(value: string | undefined): boolean {
+  return value === " " || value === "\n" || value === "\r" || value === "\t";
 }
 
 function responseTooLarge(status: number, operation: string): ExchangeSdkError {

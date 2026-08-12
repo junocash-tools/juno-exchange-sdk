@@ -25,6 +25,36 @@ function broadcastResult(overrides = {}) {
   };
 }
 
+function walletBalanceResult(overrides = {}) {
+  return {
+    wallet_id: WALLET_ID,
+    min_confirmations: 100,
+    min_note_zat: 100001,
+    as_of_node_height: 920000,
+    as_of_scanner_height: 920000,
+    as_of_scanner_hash: "d".repeat(64),
+    scanner_lag: 0,
+    total_unspent: { note_count: 7, value_zat: 42000000000 },
+    spendable: {
+      note_count: 3,
+      value_zat: 39000000000,
+      smallest_note_zat: 1000000000,
+      largest_note_zat: 30000000000,
+    },
+    immature: { note_count: 1, value_zat: 1200000000 },
+    pending_spend: {
+      note_count: 1,
+      value_zat: 1500000000,
+      known_expiry_count: 1,
+      next_expiry_height: 920035,
+      last_expiry_height: 920035,
+    },
+    below_min_note: { note_count: 1, value_zat: 99999 },
+    witness_unavailable: { note_count: 1, value_zat: 299900001 },
+    ...overrides,
+  };
+}
+
 test("broadcast sends the existing gateway contract and parses its result", async () => {
   const mock = scriptedFetch([jsonResponse(success(broadcastResult()))]);
   const client = new GatewayClient({
@@ -111,6 +141,184 @@ test("lookupTransaction uses wallet scope and maps transaction metadata", async 
     },
     walletEffects: [{ kind: "spend", amount_zat: "260000" }],
   });
+});
+
+test("getWalletBalance requests and maps the atomic wallet note summary", async () => {
+  const mock = scriptedFetch([jsonResponse(success(walletBalanceResult()))]);
+  const client = new GatewayClient({
+    baseUrl,
+    authToken: "treasury-token",
+    fetch: mock.fetch,
+  });
+
+  const result = await client.getWalletBalance(WALLET_ID, {
+    minConfirmations: 100,
+    minNoteZat: 100001n,
+    requestId: "wallet-balance-1",
+  });
+
+  assert.deepEqual(result, {
+    walletId: WALLET_ID,
+    minConfirmations: 100,
+    minNoteZat: "100001",
+    asOfNodeHeight: 920000,
+    asOfScannerHeight: 920000,
+    asOfScannerHash: "d".repeat(64),
+    scannerLag: 0,
+    totalUnspent: { noteCount: 7, valueZat: "42000000000" },
+    spendable: {
+      noteCount: 3,
+      valueZat: "39000000000",
+      smallestNoteZat: "1000000000",
+      largestNoteZat: "30000000000",
+    },
+    immature: { noteCount: 1, valueZat: "1200000000" },
+    pendingSpend: {
+      noteCount: 1,
+      valueZat: "1500000000",
+      knownExpiryCount: 1,
+      nextExpiryHeight: 920035,
+      lastExpiryHeight: 920035,
+    },
+    belowMinNote: { noteCount: 1, valueZat: "99999" },
+    witnessUnavailable: { noteCount: 1, valueZat: "299900001" },
+  });
+  assert.equal(
+    mock.calls[0].url,
+    `${baseUrl}/v1/wallets/${WALLET_ID}/notes/summary?min_confirmations=100&min_note_zat=100001`,
+  );
+  assert.equal(mock.calls[0].headers.get("authorization"), "Bearer treasury-token");
+  assert.equal(mock.calls[0].headers.get("x-request-id"), "wallet-balance-1");
+  assert.equal(mock.calls[0].body, undefined);
+});
+
+test("getWalletBalance preserves gateway defaults and empty optional buckets", async () => {
+  const mock = scriptedFetch([
+    jsonResponse(
+      success(
+        walletBalanceResult({
+          min_note_zat: 0,
+          total_unspent: { note_count: 0, value_zat: 0 },
+          spendable: { note_count: 0, value_zat: 0 },
+          immature: { note_count: 0, value_zat: 0 },
+          pending_spend: { note_count: 0, value_zat: 0, known_expiry_count: 0 },
+          below_min_note: { note_count: 0, value_zat: 0 },
+          witness_unavailable: { note_count: 0, value_zat: 0 },
+        }),
+      ),
+    ),
+  ]);
+  const client = new GatewayClient({ baseUrl, fetch: mock.fetch });
+
+  const result = await client.getWalletBalance(WALLET_ID);
+
+  assert.equal(mock.calls[0].url, `${baseUrl}/v1/wallets/${WALLET_ID}/notes/summary`);
+  assert.deepEqual(result.spendable, { noteCount: 0, valueZat: "0" });
+  assert.deepEqual(result.pendingSpend, {
+    noteCount: 0,
+    valueZat: "0",
+    knownExpiryCount: 0,
+  });
+});
+
+test("getWalletBalance validates options before making a request", async () => {
+  const cases = [
+    { minConfirmations: -1 },
+    { minConfirmations: 1.5 },
+    { minConfirmations: 10001 },
+    { minConfirmations: "100" },
+    { minNoteZat: 100001 },
+    { minNoteZat: "-1" },
+    { minNoteZat: "0100001" },
+    { minNoteZat: " 100001 " },
+    { minNoteZat: "9223372036854775808" },
+  ];
+
+  for (const options of cases) {
+    const mock = scriptedFetch([]);
+    const client = new GatewayClient({ baseUrl, fetch: mock.fetch });
+    await assert.rejects(client.getWalletBalance(WALLET_ID, options), (error) => {
+      assert.ok(isExchangeSdkError(error));
+      assert.equal(error.code, "invalid_argument");
+      return true;
+    });
+    assert.equal(mock.calls.length, 0);
+  }
+});
+
+test("getWalletBalance preserves signed-64-bit zatoshi values exactly", async () => {
+  const exactValue = "9007199254740993";
+  const response = success(
+    walletBalanceResult({
+      min_note_zat: exactValue,
+      total_unspent: { note_count: 1, value_zat: exactValue },
+      spendable: {
+        note_count: 1,
+        value_zat: exactValue,
+        smallest_note_zat: exactValue,
+        largest_note_zat: exactValue,
+      },
+      immature: { note_count: 0, value_zat: "0" },
+      pending_spend: {
+        note_count: 0,
+        value_zat: "0",
+        known_expiry_count: 0,
+      },
+      below_min_note: { note_count: 0, value_zat: "0" },
+      witness_unavailable: { note_count: 0, value_zat: "0" },
+    }),
+  );
+  const wire = JSON.stringify(response).replace(
+    /"(min_note_zat|value_zat|smallest_note_zat|largest_note_zat)":"([0-9]+)"/g,
+    '"$1":$2',
+  );
+  const mock = scriptedFetch([
+    new Response(wire, { status: 200, headers: { "Content-Type": "application/json" } }),
+  ]);
+  const client = new GatewayClient({ baseUrl, fetch: mock.fetch });
+
+  const result = await client.getWalletBalance(WALLET_ID, { minNoteZat: exactValue });
+
+  assert.equal(result.minNoteZat, exactValue);
+  assert.equal(result.totalUnspent.valueZat, exactValue);
+  assert.equal(result.spendable.valueZat, exactValue);
+  assert.equal(result.spendable.smallestNoteZat, exactValue);
+  assert.equal(result.spendable.largestNoteZat, exactValue);
+});
+
+test("getWalletBalance rejects invalid or internally inconsistent responses", async () => {
+  const cases = [
+    walletBalanceResult({ wallet_id: "other-wallet" }),
+    walletBalanceResult({ min_confirmations: 99 }),
+    walletBalanceResult({ total_unspent: { note_count: 7, value_zat: 9007199254740992 } }),
+    walletBalanceResult({ total_unspent: { note_count: 7, value_zat: 41999999999 } }),
+    walletBalanceResult({ as_of_scanner_height: 919999, scanner_lag: 0 }),
+    walletBalanceResult({ spendable: { note_count: 3, value_zat: 39000000000 } }),
+    walletBalanceResult({
+      pending_spend: {
+        note_count: 1,
+        value_zat: 1500000000,
+        known_expiry_count: 1,
+      },
+    }),
+    walletBalanceResult({ as_of_scanner_hash: "D".repeat(64) }),
+  ];
+
+  for (const response of cases) {
+    const mock = scriptedFetch([jsonResponse(success(response))]);
+    const client = new GatewayClient({ baseUrl, fetch: mock.fetch });
+    await assert.rejects(
+      client.getWalletBalance(WALLET_ID, {
+        minConfirmations: 100,
+        minNoteZat: "100001",
+      }),
+      (error) => {
+        assert.ok(isExchangeSdkError(error));
+        assert.equal(error.code, "invalid_response");
+        return true;
+      },
+    );
+  }
 });
 
 test("broadcast retries only named safe gateway failures with an identical body", async () => {

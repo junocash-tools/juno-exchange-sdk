@@ -9,6 +9,7 @@ const lowerHex64Pattern = /^[0-9a-f]{64}$/;
 const canonicalPositiveIntegerPattern = /^[1-9][0-9]*$/;
 const canonicalUnsignedIntegerPattern = /^(0|[1-9][0-9]*)$/;
 const maximumZatoshiValue = 18_446_744_073_709_551_615n;
+const maximumSignedZatoshiValue = 9_223_372_036_854_775_807n;
 const bech32mCharset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const bech32mValues = new Map([...bech32mCharset].map((character, index) => [character, index]));
 const bech32mConstant = 0x2bc830a3;
@@ -161,6 +162,44 @@ export function normalizePositiveZatoshi(value: ZatoshiAmount, field = "amountZa
     throw invalidArgument(`${field} must be a positive canonical decimal string or bigint`);
   }
   return result;
+}
+
+export function normalizeNonNegativeSignedZatoshi(
+  value: ZatoshiAmount,
+  field = "amountZat",
+): string {
+  if (typeof value !== "string" && typeof value !== "bigint") {
+    throw invalidArgument(`${field} must be a non-negative canonical decimal string or bigint`);
+  }
+  const result = typeof value === "bigint" ? value.toString(10) : value;
+  if (
+    !canonicalUnsignedIntegerPattern.test(result) ||
+    result.length > 19 ||
+    BigInt(result) > maximumSignedZatoshiValue
+  ) {
+    throw invalidArgument(
+      `${field} must be a non-negative canonical decimal string or bigint no greater than ${maximumSignedZatoshiValue}`,
+    );
+  }
+  return result;
+}
+
+export function validateResponseZatoshi(value: unknown, field: string): string {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw invalidResponse(`${field} must be a non-negative integer represented without loss`);
+    }
+    return String(value);
+  }
+  if (
+    typeof value !== "string" ||
+    !canonicalUnsignedIntegerPattern.test(value) ||
+    value.length > 19 ||
+    BigInt(value) > maximumSignedZatoshiValue
+  ) {
+    throw invalidResponse(`${field} must be a canonical non-negative signed-64-bit zatoshi value`);
+  }
+  return value;
 }
 
 export function validateUnsignedDecimal(value: unknown, field: string): string {

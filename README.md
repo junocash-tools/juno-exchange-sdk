@@ -7,7 +7,7 @@ The SDK does not hold keys, scan the chain, select notes, calculate fees, or sig
 ## Install
 
 ```sh
-npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.1.0/junocash-tools-exchange-sdk-0.1.0.tgz
+npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.2.0/junocash-tools-exchange-sdk-0.2.0.tgz
 ```
 
 Node.js 20 or later is required. The versioned GitHub Release archive is the supported public distribution. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
@@ -76,6 +76,41 @@ Track the result through the existing gateway:
 const lookup = await gateway.lookupTransaction(signed.txid, {
   walletId: "hot-wallet-1",
 });
+```
+
+## Wallet-wide balance
+
+Use `getWalletBalance` for one server-calculated view across every address derived for the wallet. The gateway credential needs the `treasury` scope and a grant for the requested wallet.
+
+```js
+const balance = await gateway.getWalletBalance("hot-wallet-1", {
+  minConfirmations: 100,
+  minNoteZat: "0",
+});
+
+console.log({
+  totalUnspentZat: balance.totalUnspent.valueZat,
+  spendableZat: balance.spendable.valueZat,
+  pendingSpendZat: balance.pendingSpend.valueZat,
+});
+```
+
+`totalUnspent` is the wallet-wide total, not one address balance. The five non-overlapping operational buckets—`spendable`, `immature`, `pendingSpend`, `belowMinNote`, and `witnessUnavailable`—partition that total. Each bucket includes `noteCount` and `valueZat`; the spendable and pending buckets also include their relevant extrema and expiry metadata.
+
+All returned zatoshi values are canonical decimal strings and are decoded without JavaScript number rounding. `minNoteZat` accepts a decimal string or `bigint`; JavaScript `number` is rejected. `minConfirmations` must be an integer from `0` through `10000`. Omit either option to use the gateway's configured default. When comparing the result with a future plan, use the same values as `JUNO_GATEWAY_DEFAULT_CONFIRMATIONS` and `JUNO_COORDINATOR_MIN_NOTE_ZAT`; their shipped defaults are `100` and `0`.
+
+Treat `spendable.valueZat` as a liquidity signal, not a withdrawal authorization or reservation. Exact funding still depends on the requested amount, fee, input limit, and active coordinator reservations, so `createRawTransaction` remains authoritative. Save the snapshot height and hash with monitoring records when consistent point-in-time reconciliation matters.
+
+The packaged `examples/get-wallet-balance.mjs` is runnable without application code:
+
+```sh
+export JUNO_GATEWAY_URL=https://gateway.example
+export JUNO_GATEWAY_TOKEN=replace-with-treasury-token
+export JUNO_WALLET_ID=hot-wallet-1
+export JUNO_MIN_CONFIRMATIONS=100
+export JUNO_MIN_NOTE_ZAT=0
+
+node examples/get-wallet-balance.mjs
 ```
 
 ## Manual attempt control

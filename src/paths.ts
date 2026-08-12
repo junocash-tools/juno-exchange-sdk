@@ -9,6 +9,8 @@ export interface CoordinatorPaths {
 export interface GatewayPaths {
   readonly broadcast: string;
   readonly transaction: (txid: string) => string;
+  /** Falls back to the standard gateway route when omitted. */
+  readonly walletBalance?: (walletId: string) => string;
 }
 
 export const DEFAULT_COORDINATOR_PATHS: CoordinatorPaths = Object.freeze({
@@ -19,7 +21,9 @@ export const DEFAULT_COORDINATOR_PATHS: CoordinatorPaths = Object.freeze({
     `/v1/transaction-attempts/${encodePathSegment(attemptId, "attemptId")}/cancel`,
 });
 
-export const DEFAULT_GATEWAY_PATHS: GatewayPaths = Object.freeze({
+export const DEFAULT_GATEWAY_PATHS: Readonly<Required<GatewayPaths>> = Object.freeze({
   broadcast: "/v1/transactions/broadcast",
   transaction: (txid: string) => `/v1/transactions/${encodePathSegment(txid, "txid")}`,
+  walletBalance: (walletId: string) =>
+    `/v1/wallets/${encodePathSegment(walletId, "walletId")}/notes/summary`,
 });

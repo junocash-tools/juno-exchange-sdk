@@ -27,8 +27,13 @@ export type {
   BroadcastTransactionInput,
   BroadcastTransactionResult,
   GatewayTransaction,
+  GetWalletBalanceOptions,
   LookupTransactionOptions,
+  PendingSpendWalletBalanceBucket,
+  SpendableWalletBalanceBucket,
   TransactionLookupResult,
+  WalletBalanceBucket,
+  WalletBalanceResult,
 } from "./contracts/gateway.js";
 export type {
   AuthTokenProvider,

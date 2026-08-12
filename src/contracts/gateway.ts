@@ -1,4 +1,4 @@
-import type { RequestOptions } from "../types.js";
+import type { RequestOptions, ZatoshiAmount } from "../types.js";
 
 export interface BroadcastTransactionInput {
   readonly idempotencyKey: string;
@@ -39,6 +39,50 @@ export interface TransactionLookupResult {
   readonly transaction: GatewayTransaction;
   readonly walletId?: string;
   readonly walletEffects?: readonly Readonly<Record<string, unknown>>[];
+}
+
+export interface GetWalletBalanceOptions extends RequestOptions {
+  readonly minConfirmations?: number;
+  readonly minNoteZat?: ZatoshiAmount;
+  readonly requestId?: string;
+}
+
+export interface WalletBalanceBucket {
+  readonly noteCount: number;
+  /** Canonical decimal zatoshi value. */
+  readonly valueZat: string;
+}
+
+export interface SpendableWalletBalanceBucket extends WalletBalanceBucket {
+  /** Present only when noteCount is greater than zero. */
+  readonly smallestNoteZat?: string;
+  /** Present only when noteCount is greater than zero. */
+  readonly largestNoteZat?: string;
+}
+
+export interface PendingSpendWalletBalanceBucket extends WalletBalanceBucket {
+  readonly knownExpiryCount: number;
+  /** Present only when knownExpiryCount is greater than zero. */
+  readonly nextExpiryHeight?: number;
+  /** Present only when knownExpiryCount is greater than zero. */
+  readonly lastExpiryHeight?: number;
+}
+
+export interface WalletBalanceResult {
+  readonly walletId: string;
+  readonly minConfirmations: number;
+  /** Canonical decimal zatoshi value. */
+  readonly minNoteZat: string;
+  readonly asOfNodeHeight: number;
+  readonly asOfScannerHeight: number;
+  readonly asOfScannerHash: string;
+  readonly scannerLag: number;
+  readonly totalUnspent: WalletBalanceBucket;
+  readonly spendable: SpendableWalletBalanceBucket;
+  readonly immature: WalletBalanceBucket;
+  readonly pendingSpend: PendingSpendWalletBalanceBucket;
+  readonly belowMinNote: WalletBalanceBucket;
+  readonly witnessUnavailable: WalletBalanceBucket;
 }
 
 export interface BroadcastOptions extends RequestOptions {}

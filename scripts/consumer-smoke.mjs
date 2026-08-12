@@ -36,7 +36,7 @@ try {
 const coordinator = new CoordinatorClient({ baseUrl: "https://coordinator.example", network: "regtest" });
 const gateway = new GatewayClient({ baseUrl: "https://gateway.example" });
 const combined = new JunoExchangeClient({ coordinator: { baseUrl: "https://coordinator.example" }, gateway: { baseUrl: "https://gateway.example" } });
-if (!coordinator || !gateway || !combined) throw new Error("ESM exports unavailable");
+if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !== "function") throw new Error("ESM exports unavailable");
 `,
   );
   await writeFile(
@@ -45,17 +45,24 @@ if (!coordinator || !gateway || !combined) throw new Error("ESM exports unavaila
 const coordinator = new CoordinatorClient({ baseUrl: "https://coordinator.example", network: "mainnet" });
 const gateway = new GatewayClient({ baseUrl: "https://gateway.example" });
 const combined = new JunoExchangeClient({ coordinator: { baseUrl: "https://coordinator.example" }, gateway: { baseUrl: "https://gateway.example" } });
-if (!coordinator || !gateway || !combined) throw new Error("CommonJS exports unavailable");
+if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !== "function") throw new Error("CommonJS exports unavailable");
 `,
   );
   await writeFile(
     path.join(consumerDirectory, "consumer.ts"),
-    `import { CoordinatorClient, type JunoNetwork, type ZatoshiAmount } from "@junocash-tools/exchange-sdk";
+    `import { CoordinatorClient, GatewayClient, type GatewayPaths, type GetWalletBalanceOptions, type JunoNetwork, type WalletBalanceResult, type ZatoshiAmount } from "@junocash-tools/exchange-sdk";
 const network: JunoNetwork = "testnet";
 const amount: ZatoshiAmount = 250000n;
 const client = new CoordinatorClient({ baseUrl: "https://coordinator.example", network });
+const gateway = new GatewayClient({ baseUrl: "https://gateway.example" });
+const legacyGatewayPaths: GatewayPaths = { broadcast: "/broadcast", transaction: (txid) => "/transactions/" + txid };
+const gatewayWithCustomPaths = new GatewayClient({ baseUrl: "https://gateway.example", paths: legacyGatewayPaths });
+const balanceOptions: GetWalletBalanceOptions = { minConfirmations: 100, minNoteZat: 100001n };
+const balance: Promise<WalletBalanceResult> = gateway.getWalletBalance("hot-wallet-1", balanceOptions);
 void amount;
 void client;
+void balance;
+void gatewayWithCustomPaths;
 `,
   );
 
