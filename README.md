@@ -7,15 +7,71 @@ The SDK does not hold keys, scan the chain, select notes, calculate fees, or sig
 ## Install
 
 ```sh
-npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.2.0/junocash-tools-exchange-sdk-0.2.0.tgz
+npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.3.0/junocash-tools-exchange-sdk-0.3.0.tgz
 ```
 
 Node.js 20 or later is required. The versioned GitHub Release archive is the supported public distribution. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
 
-## Create a raw transaction
+## Process a withdrawal
 
 ```js
-import { CoordinatorClient } from "@junocash-tools/exchange-sdk";
+import { JunoExchangeClient } from "@junocash-tools/exchange-sdk";
+
+const exchange = new JunoExchangeClient({
+  coordinator: {
+    baseUrl: process.env.JUNO_COORDINATOR_URL,
+    authToken: process.env.JUNO_COORDINATOR_TOKEN,
+    network: "mainnet",
+  },
+  gateway: {
+    baseUrl: process.env.JUNO_GATEWAY_URL,
+    authToken: process.env.JUNO_GATEWAY_TOKEN,
+  },
+});
+
+const submitted = await exchange.submitWithdrawal({
+  withdrawalId: "1842",
+  walletId: "hot-wallet-1",
+  toAddress: withdrawal.address,
+  amountZat: withdrawal.amountZat,
+});
+
+await withdrawals.save({
+  withdrawalId: submitted.withdrawalId,
+  attemptId: submitted.attemptId,
+  state: submitted.state,
+});
+```
+
+`submitWithdrawal` returns as soon as the coordinator has durably accepted or replayed the withdrawal. It does not wait for signing, broadcast, mining, or finality, so one exchange worker is not blocked by an earlier attempt. Persist both IDs before acknowledging the job.
+
+Run one idempotent progression step from a durable worker:
+
+```js
+const status = await exchange.advanceWithdrawal({
+  withdrawalId: "1842",
+  walletId: "hot-wallet-1",
+  toAddress: withdrawal.address,
+  amountZat: withdrawal.amountZat,
+});
+```
+
+The SDK derives the coordinator approval reference plus creation and broadcast idempotency keys from `withdrawalId`. The ID must contain 1–96 ASCII letters, digits, `_`, or `-`, starting with a letter or digit. Reusing an ID with the same immutable request recovers the same attempt and broadcast result. Reusing it with a different wallet, destination, amount, or memo returns an idempotency conflict. Idempotency remains enforced; it is hidden rather than removed.
+
+`advanceWithdrawal` reports an exchange-facing state: `accepted`, `signing`, `ready_to_broadcast`, `broadcast`, `mined`, `confirmed`, `blocked`, or `failed`. When exact signed material is ready, it re-reads the expiry-checked attempt and broadcasts it. A successful idempotent replay where the node already knows the tx is also returned as `broadcast`.
+
+For a simple bounded process-local flow, use `processWithdrawal`. It polls at one second by default, has a strict two-minute total wait, reports each state through `onStatus`, and returns after broadcast rather than waiting for confirmations. A timeout includes the durable attempt ID and latest coordinator state/error; it never cancels or replaces the server attempt.
+
+Use `walletId`, not `addressFrom`. A shielded spend consumes notes owned by a registered wallet/UFVK; it cannot reliably spend “from” one visible address. The private coordinator selects eligible notes, reserves them, applies policy, builds the transaction, and invokes the protected signer.
+
+Amounts are zatoshis. Pass a canonical decimal string or `bigint`; JavaScript `number` is rejected to avoid rounding. A withdrawal can include a lowercase hex memo with at most 512 bytes.
+
+## Low-level signing and broadcast
+
+Use the low-level clients when the exchange must persist and inspect signed bytes before network submission:
+
+```js
+import { CoordinatorClient, GatewayClient } from "@junocash-tools/exchange-sdk";
 
 const coordinator = new CoordinatorClient({
   baseUrl: process.env.JUNO_COORDINATOR_URL,
@@ -30,30 +86,6 @@ const signed = await coordinator.createRawTransaction({
   toAddress: withdrawal.address,
   amountZat: withdrawal.amountZat,
 });
-
-await withdrawals.save({
-  attemptId: signed.attemptId,
-  txid: signed.txid,
-  rawTxHex: signed.rawTxHex,
-  changeAddress: signed.changeAddress,
-  feeZat: signed.feeZat,
-  expiryHeight: signed.expiryHeight,
-  planDigest: signed.planDigest,
-});
-```
-
-`rawTxHex` is the ergonomic name for the API field `raw_tx_hex`. It is signed and ready for broadcast.
-
-Use `walletId`, not `addressFrom`. A shielded spend consumes notes owned by a registered wallet/UFVK; it cannot reliably spend “from” one visible address. The private coordinator selects eligible notes, reserves them, applies policy, builds the transaction, and invokes the protected signer.
-
-Amounts are zatoshis. Pass a canonical decimal string or `bigint`; JavaScript `number` is rejected to avoid rounding. A withdrawal can include a lowercase hex memo with at most 512 bytes.
-
-## Broadcast
-
-Creating and broadcasting are separate operations so the exchange can persist and approve the signed result before network submission.
-
-```js
-import { GatewayClient } from "@junocash-tools/exchange-sdk";
 
 const gateway = new GatewayClient({
   baseUrl: process.env.JUNO_GATEWAY_URL,
@@ -132,11 +164,13 @@ const current = await coordinator.status(attempt.attemptId);
 const cancelled = await coordinator.cancelAttempt(attempt.attemptId);
 ```
 
-`createRawTransaction` calls `createAttempt`, then polls `status` until signed material is durable. Its default wait is 10 minutes with one-second polling. An idempotent replay also returns that material if the attempt has already reached `broadcast`, `mined`, `orphaned`, or `final`. It rejects expired or released material because that raw transaction is no longer safe to submit.
+`createRawTransaction` calls `createAttempt`, then polls `status` until signed material is durable. Its default wait is two minutes with one-second polling and it accepts an `onStatus` callback. An idempotent replay also returns that material if the attempt has already reached `broadcast`, `mined`, `orphaned`, or `final`. It rejects expired or released material because that raw transaction is no longer safe to submit.
 
 A local wait timeout does not cancel the server-side attempt. Store `attemptId` and query it again. Cancel explicitly only when exchange policy requires it.
 
 Common states are `planning`, `reserved`, `signing`, `signing_unknown`, `signed`, `broadcast`, `mined`, `final`, `failed_unsigned`, `expired_pending_reconciliation`, `orphaned`, `released`, and `cancelled`. The client keeps polling through `signing_unknown`; if the local wait times out, query the same attempt later and never create a replacement spend until the coordinator resolves it.
+
+For on-demand diagnostics, `coordinator.listActiveAttempts(walletId)` lists active attempts and note reservations owned by that exact coordinator credential. It never returns signed raw bytes. It is not a preflight call required before each withdrawal; use it only to explain blocked wallet liquidity. An operator must inspect attempts owned by other credentials.
 
 ## Idempotency and retries
 
@@ -182,7 +216,7 @@ Set `network` to `mainnet`, `testnet`, or `regtest` on the coordinator client. T
 ## CommonJS
 
 ```js
-const { CoordinatorClient, GatewayClient } = require("@junocash-tools/exchange-sdk");
+const { CoordinatorClient, GatewayClient, JunoExchangeClient } = require("@junocash-tools/exchange-sdk");
 ```
 
 ## Runnable example
@@ -190,27 +224,18 @@ const { CoordinatorClient, GatewayClient } = require("@junocash-tools/exchange-s
 ```sh
 export JUNO_COORDINATOR_URL=https://coordinator.internal.example
 export JUNO_COORDINATOR_TOKEN=replace-with-scoped-token
+export JUNO_GATEWAY_URL=https://gateway.example
+export JUNO_GATEWAY_TOKEN=replace-with-broadcast-token
 export JUNO_NETWORK=regtest
 export JUNO_WALLET_ID=hot-wallet-1
-export JUNO_IDEMPOTENCY_KEY=withdrawal-1842-attempt-1
 
-node examples/create-raw-transaction.mjs \
-  withdrawal:1842 \
+node examples/process-withdrawal.mjs \
+  1842 \
   '<valid-juno-address>' \
   250000
 ```
 
-The example writes one JSON object containing the signed hex and reconciliation metadata. Redirect it only to an access-controlled location.
-
-Broadcast that saved object with the second runnable example:
-
-```sh
-export JUNO_GATEWAY_URL=https://gateway.example
-export JUNO_GATEWAY_TOKEN=replace-with-broadcast-token
-export JUNO_BROADCAST_IDEMPOTENCY_KEY=withdrawal-1842-broadcast-1
-
-node examples/broadcast-raw-transaction.mjs signed-transaction.json
-```
+The example writes the public withdrawal result and exits after broadcast. Production workers should call `submitWithdrawal`, persist the returned attempt ID, and invoke `advanceWithdrawal` from their durable job system. The existing raw-create and broadcast examples remain available for the low-level flow.
 
 ## Development
 

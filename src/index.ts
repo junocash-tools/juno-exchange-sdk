@@ -9,13 +9,21 @@ export {
   type GatewayPaths,
 } from "./paths.js";
 export type {
+  ProcessWithdrawalOptions,
+  WithdrawalInput,
+  WithdrawalState,
+  WithdrawalStatus,
+} from "./contracts/withdrawal.js";
+export type {
   CancelAttemptOptions,
+  ActiveTransactionAttempts,
   CreateAttemptOptions,
   CreateRawTransactionInput,
   CreateRawTransactionOptions,
   CreateTransactionAttemptInput,
   GetAttemptOptions,
   KnownTransactionAttemptState,
+  ListActiveAttemptsOptions,
   SignedTransaction,
   TransactionAttempt,
   TransactionAttemptError,

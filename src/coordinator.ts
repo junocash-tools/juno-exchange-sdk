@@ -1,10 +1,12 @@
 import type {
   CancelAttemptOptions,
+  ActiveTransactionAttempts,
   CreateAttemptOptions,
   CreateRawTransactionInput,
   CreateRawTransactionOptions,
   CreateTransactionAttemptInput,
   GetAttemptOptions,
+  ListActiveAttemptsOptions,
   SignedTransaction,
   TransactionAttempt,
   TransactionOutputInput,
@@ -60,12 +62,17 @@ const terminalFailureStates = new Set([
 
 export class CoordinatorClient {
   readonly #http: HttpClient;
-  readonly #paths: CoordinatorPaths;
+  readonly #paths: Readonly<Required<CoordinatorPaths>>;
   readonly #network: ClientOptions["network"];
 
   constructor(options: CoordinatorClientOptions) {
     this.#http = new HttpClient(options);
-    this.#paths = options.paths ?? DEFAULT_COORDINATOR_PATHS;
+    this.#paths = Object.freeze({
+      attempts: options.paths?.attempts ?? DEFAULT_COORDINATOR_PATHS.attempts,
+      attempt: options.paths?.attempt ?? DEFAULT_COORDINATOR_PATHS.attempt,
+      cancelAttempt: options.paths?.cancelAttempt ?? DEFAULT_COORDINATOR_PATHS.cancelAttempt,
+      activeAttempts: options.paths?.activeAttempts ?? DEFAULT_COORDINATOR_PATHS.activeAttempts,
+    });
     this.#network = options.network;
   }
 
@@ -118,6 +125,39 @@ export class CoordinatorClient {
     return this.getAttempt(attemptId, options);
   }
 
+  async listActiveAttempts(
+    walletId: string,
+    options: ListActiveAttemptsOptions = {},
+  ): Promise<ActiveTransactionAttempts> {
+    const normalizedWalletId = validateWalletId(walletId);
+    const requestId = validateRequestId(options.requestId);
+    const payload = await this.#http.request({
+      method: "GET",
+      path: this.#paths.activeAttempts(normalizedWalletId),
+      operation: "coordinator.list_active_attempts",
+      ...(requestId === undefined ? {} : { requestId }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      retryMode: "read",
+    });
+    const record = asRecord(unwrapSuccessEnvelope(payload).data, "active attempts");
+    const responseWalletId = validateWalletId(requireString(record, "wallet_id"));
+    if (responseWalletId !== normalizedWalletId) {
+      throw invalidResponse("wallet_id does not match the requested wallet");
+    }
+    if (!Array.isArray(record.attempts) || record.attempts.length > 1_000) {
+      throw invalidResponse("attempts must be an array with at most 1000 entries");
+    }
+    const attempts = record.attempts.map((value) => {
+      const attempt = parseAttempt(value);
+      if (attempt.walletId !== normalizedWalletId || attempt.rawTxHex !== undefined) {
+        throw invalidResponse("active attempt does not match the diagnostic contract");
+      }
+      return attempt;
+    });
+    return { walletId: responseWalletId, attempts };
+  }
+
   async cancelAttempt(
     attemptId: string,
     options: CancelAttemptOptions = {},
@@ -141,9 +181,17 @@ export class CoordinatorClient {
     options: CreateRawTransactionOptions = {},
   ): Promise<SignedTransaction> {
     const pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 1_000, "pollIntervalMs");
-    const waitTimeoutMs = positiveInteger(options.waitTimeoutMs ?? 10 * 60_000, "waitTimeoutMs");
+    const waitTimeoutMs = positiveInteger(options.waitTimeoutMs ?? 2 * 60_000, "waitTimeoutMs");
     const deadline = Date.now() + waitTimeoutMs;
-    let attempt = await this.createAttempt(
+    const controller = new AbortController();
+    let timedOut = false;
+    const onAbort = (): void => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, waitTimeoutMs);
+    let attempt: TransactionAttempt | undefined;
+    try {
+      attempt = await this.createAttempt(
       {
         idempotencyKey: input.idempotencyKey,
         walletId: input.walletId,
@@ -157,21 +205,30 @@ export class CoordinatorClient {
         ],
         ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
       },
-      requestOptions(options),
+      requestOptions(options, controller.signal, deadline),
     );
 
     for (;;) {
+      options.onStatus?.(attempt);
       if (signedMaterialStates.has(attempt.state)) return toSignedTransaction(attempt);
       if (terminalFailureStates.has(attempt.state)) throw terminalAttemptError(attempt);
       const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) throw waitTimeoutError(attempt.attemptId);
+      if (remainingMs <= 0) break;
       await abortableDelay(
         Math.min(pollIntervalMs, remainingMs),
-        options.signal,
+        controller.signal,
         "coordinator.create_raw_transaction",
       );
-      attempt = await this.getAttempt(attempt.attemptId, requestOptions(options));
+      attempt = await this.getAttempt(attempt.attemptId, requestOptions(options, controller.signal, deadline));
     }
+    } catch (error) {
+      if (!timedOut || options.signal?.aborted || !(error instanceof ExchangeSdkError) ||
+          (error.code !== "client_aborted" && error.code !== "client_timeout")) throw error;
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
+    throw waitTimeoutError(attempt);
   }
 }
 
@@ -428,10 +485,10 @@ function positiveInteger(value: number, field: string): number {
   return value;
 }
 
-function requestOptions(options: CreateRawTransactionOptions): GetAttemptOptions {
+function requestOptions(options: CreateRawTransactionOptions, signal: AbortSignal, deadline: number): GetAttemptOptions {
   return {
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    signal,
+    timeoutMs: Math.max(1, Math.min(options.timeoutMs ?? 30_000, deadline - Date.now())),
   };
 }
 
@@ -451,11 +508,14 @@ function terminalAttemptError(attempt: TransactionAttempt): ExchangeSdkError {
   );
 }
 
-function waitTimeoutError(attemptId: string): ExchangeSdkError {
+function waitTimeoutError(attempt: TransactionAttempt | undefined): ExchangeSdkError {
   return new ExchangeSdkError("Timed out waiting for a signed transaction; the attempt remains active", {
     code: "attempt_wait_timeout",
     retryable: true,
-    details: { attempt_id: attemptId },
+    details: attempt === undefined ? { action: "replay_original_creation_key" } : {
+      attempt_id: attempt.attemptId, state: attempt.state,
+      ...(attempt.error === undefined ? {} : { attempt_error: attempt.error }),
+    },
     operation: "coordinator.create_raw_transaction",
   });
 }

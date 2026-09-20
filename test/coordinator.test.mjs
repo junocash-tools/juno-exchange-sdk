@@ -24,6 +24,10 @@ import {
 
 const baseUrl = "https://coordinator.example/private/";
 
+function coordinator(fetch) {
+  return new CoordinatorClient({ baseUrl: "https://coordinator.example", network: "regtest", fetch });
+}
+
 test("createAttempt maps exact wire fields, auth, request ID, and bigint amounts", async () => {
   const destination = junoAddress("regtest");
   const mock = scriptedFetch([jsonResponse(success(attempt()))]);
@@ -236,7 +240,7 @@ test("createRawTransaction timeout leaves the coordinator attempt active", async
       assert.ok(isExchangeSdkError(error));
       assert.equal(error.code, "attempt_wait_timeout");
       assert.equal(error.retryable, true);
-      assert.deepEqual(error.details, { attempt_id: ATTEMPT_ID });
+      assert.deepEqual(error.details, { attempt_id: ATTEMPT_ID, state: "planning" });
       return true;
     },
   );
@@ -288,6 +292,39 @@ test("cancelAttempt is not automatically retried", async () => {
     return true;
   });
   assert.equal(mock.calls.length, 1);
+});
+
+test("listActiveAttempts maps private diagnostics without signed raw material", async () => {
+  const mock = scriptedFetch([
+    jsonResponse(success({
+      wallet_id: WALLET_ID,
+      attempts: [signedAttempt({ raw_tx_hex: undefined })],
+    })),
+  ]);
+  const client = coordinator(mock.fetch);
+  const result = await client.listActiveAttempts(WALLET_ID);
+  assert.equal(result.walletId, WALLET_ID);
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].attemptId, ATTEMPT_ID);
+  assert.equal(result.attempts[0].rawTxHex, undefined);
+  assert.equal(mock.calls[0].method, "GET");
+  assert.equal(
+    mock.calls[0].url,
+    `https://coordinator.example/v1/wallets/${WALLET_ID}/transaction-attempts/active`,
+  );
+});
+
+test("listActiveAttempts rejects raw transaction leakage and wallet mismatch", async () => {
+  for (const data of [
+    { wallet_id: WALLET_ID, attempts: [signedAttempt()] },
+    { wallet_id: "another-wallet", attempts: [] },
+  ]) {
+    const mock = scriptedFetch([jsonResponse(success(data))]);
+    await assert.rejects(
+      coordinator(mock.fetch).listActiveAttempts(WALLET_ID),
+      (error) => isExchangeSdkError(error) && error.code === "invalid_response",
+    );
+  }
 });
 
 test("API failures retain typed status, code, request ID, retryability, and details", async () => {

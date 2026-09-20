@@ -36,7 +36,7 @@ try {
 const coordinator = new CoordinatorClient({ baseUrl: "https://coordinator.example", network: "regtest" });
 const gateway = new GatewayClient({ baseUrl: "https://gateway.example" });
 const combined = new JunoExchangeClient({ coordinator: { baseUrl: "https://coordinator.example" }, gateway: { baseUrl: "https://gateway.example" } });
-if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !== "function") throw new Error("ESM exports unavailable");
+if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !== "function" || typeof combined.submitWithdrawal !== "function" || typeof coordinator.listActiveAttempts !== "function") throw new Error("ESM exports unavailable");
 `,
   );
   await writeFile(
@@ -45,12 +45,12 @@ if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !==
 const coordinator = new CoordinatorClient({ baseUrl: "https://coordinator.example", network: "mainnet" });
 const gateway = new GatewayClient({ baseUrl: "https://gateway.example" });
 const combined = new JunoExchangeClient({ coordinator: { baseUrl: "https://coordinator.example" }, gateway: { baseUrl: "https://gateway.example" } });
-if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !== "function") throw new Error("CommonJS exports unavailable");
+if (!coordinator || !gateway || !combined || typeof gateway.getWalletBalance !== "function" || typeof combined.submitWithdrawal !== "function" || typeof coordinator.listActiveAttempts !== "function") throw new Error("CommonJS exports unavailable");
 `,
   );
   await writeFile(
     path.join(consumerDirectory, "consumer.ts"),
-    `import { CoordinatorClient, GatewayClient, type GatewayPaths, type GetWalletBalanceOptions, type JunoNetwork, type WalletBalanceResult, type ZatoshiAmount } from "@junocash-tools/exchange-sdk";
+    `import { CoordinatorClient, GatewayClient, JunoExchangeClient, type GatewayPaths, type GetWalletBalanceOptions, type JunoNetwork, type WalletBalanceResult, type WithdrawalInput, type WithdrawalStatus, type ZatoshiAmount } from "@junocash-tools/exchange-sdk";
 const network: JunoNetwork = "testnet";
 const amount: ZatoshiAmount = 250000n;
 const client = new CoordinatorClient({ baseUrl: "https://coordinator.example", network });
@@ -59,10 +59,14 @@ const legacyGatewayPaths: GatewayPaths = { broadcast: "/broadcast", transaction:
 const gatewayWithCustomPaths = new GatewayClient({ baseUrl: "https://gateway.example", paths: legacyGatewayPaths });
 const balanceOptions: GetWalletBalanceOptions = { minConfirmations: 100, minNoteZat: 100001n };
 const balance: Promise<WalletBalanceResult> = gateway.getWalletBalance("hot-wallet-1", balanceOptions);
+const exchange = new JunoExchangeClient({ coordinator: { baseUrl: "https://coordinator.example", network }, gateway: { baseUrl: "https://gateway.example" } });
+const withdrawal: WithdrawalInput = { withdrawalId: "1842", walletId: "hot-wallet-1", toAddress: "jtest1example", amountZat: "250000" };
+const submitted: Promise<WithdrawalStatus> = exchange.submitWithdrawal(withdrawal);
 void amount;
 void client;
 void balance;
 void gatewayWithCustomPaths;
+void submitted;
 `,
   );
 

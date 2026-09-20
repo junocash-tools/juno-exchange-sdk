@@ -1,0 +1,134 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { JunoExchangeClient, isExchangeSdkError } from "../dist/esm/index.js";
+import { ATTEMPT_ID, TXID, WALLET_ID, attempt, failure, jsonResponse, junoAddress,
+  requestJson, scriptedFetch, signedAttempt, success } from "./support.js";
+
+const input = {
+  withdrawalId: "68958548", walletId: WALLET_ID,
+  toAddress: junoAddress(), amountZat: "20000",
+};
+const approval = "withdrawal:68958548";
+
+function client(coordinatorFetch, gatewayFetch = scriptedFetch([]).fetch) {
+  return new JunoExchangeClient({
+    coordinator: { baseUrl: "https://coordinator.example", network: "regtest", fetch: coordinatorFetch },
+    gateway: { baseUrl: "https://gateway.example", fetch: gatewayFetch },
+  });
+}
+
+test("submitWithdrawal immediately returns an attempt and derives stable internal keys", async () => {
+  const mock = scriptedFetch([jsonResponse(success(attempt({ approval_reference: approval }))),
+    jsonResponse(success(attempt({ approval_reference: approval }))) ]);
+  const exchange = client(mock.fetch);
+  const first = await exchange.submitWithdrawal(input);
+  const replay = await exchange.submitWithdrawal(input);
+  assert.deepEqual(first, replay);
+  assert.equal(first.state, "accepted");
+  assert.equal(first.attemptId, ATTEMPT_ID);
+  assert.deepEqual(mock.calls.map((call) => call.headers.get("idempotency-key")),
+    ["withdrawal:68958548:create", "withdrawal:68958548:create"]);
+  assert.deepEqual(requestJson(mock.calls[0]), {
+    wallet_id: WALLET_ID, approval_reference: approval,
+    outputs: [{ to_address: input.toAddress, amount_zat: "20000" }],
+  });
+  assert.equal(mock.calls.length, 2);
+});
+
+test("advanceWithdrawal broadcasts only exact expiry-checked signed material with a stable key", async () => {
+  const signed = signedAttempt({ approval_reference: approval });
+  const coordinator = scriptedFetch([
+    jsonResponse(success(signed)), jsonResponse(success(signed)),
+    jsonResponse(success(signed)), jsonResponse(success(signed)),
+  ]);
+  const gateway = scriptedFetch([
+    jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID, state: "mempool", accepted: true, already_known: false })),
+    jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID, state: "mempool", accepted: true, already_known: true })),
+  ]);
+  const exchange = client(coordinator.fetch, gateway.fetch);
+  const first = await exchange.advanceWithdrawal(input);
+  const second = await exchange.advanceWithdrawal(input);
+  assert.equal(first.state, "broadcast");
+  assert.equal(second.txid, TXID);
+  assert.equal(first.attemptId, ATTEMPT_ID);
+  assert.deepEqual(gateway.calls.map((call) => call.headers.get("idempotency-key")),
+    ["withdrawal:68958548:broadcast", "withdrawal:68958548:broadcast"]);
+  assert.deepEqual(requestJson(gateway.calls[0]), {
+    wallet_id: WALLET_ID, expected_txid: TXID, raw_tx_hex: "00aabbcc",
+  });
+  assert.equal(second.state, "broadcast");
+});
+
+test("advanceWithdrawal does not broadcast signing uncertainty or expired material", async () => {
+  for (const state of ["signing_unknown", "expired_pending_reconciliation", "failed_unsigned"]) {
+    const coordinator = scriptedFetch([jsonResponse(success(attempt({ approval_reference: approval, state,
+      error: { code: "signer_unavailable", message: "outcome unknown", retryable: true } }))) ]);
+    const gateway = scriptedFetch([]);
+    const status = await client(coordinator.fetch, gateway.fetch).advanceWithdrawal(input);
+    assert.equal(status.state, state === "failed_unsigned" ? "failed" : "blocked");
+    assert.equal(status.error.code, "signer_unavailable");
+    assert.equal(gateway.calls.length, 0);
+  }
+});
+
+test("getWithdrawal validates its immutable business identity without modifying state", async () => {
+  const coordinator = scriptedFetch([jsonResponse(success(attempt({ approval_reference: approval, state: "planning" }))) ]);
+  const status = await client(coordinator.fetch).getWithdrawal(input.withdrawalId, ATTEMPT_ID);
+  assert.equal(status.attemptId, ATTEMPT_ID);
+  assert.equal(coordinator.calls[0].method, "GET");
+  await assert.rejects(client(scriptedFetch([jsonResponse(success(attempt()))]).fetch)
+    .getWithdrawal(input.withdrawalId, ATTEMPT_ID), (error) => isExchangeSdkError(error) && error.code === "invalid_response");
+});
+
+test("stable ID with a different request propagates idempotency conflict", async () => {
+  const coordinator = scriptedFetch([jsonResponse(failure({ code: "idempotency_conflict", message: "changed payload", retryable: false }), 409) ]);
+  await assert.rejects(client(coordinator.fetch).submitWithdrawal(input),
+    (error) => isExchangeSdkError(error) && error.code === "idempotency_conflict");
+});
+
+test("withdrawalId validation rejects unsafe input before transport", async () => {
+  const coordinator = scriptedFetch([]);
+  for (const withdrawalId of ["", "bad key", "a".repeat(97), "é", "../abc"]) {
+    await assert.rejects(client(coordinator.fetch).submitWithdrawal({ ...input, withdrawalId }),
+      (error) => isExchangeSdkError(error) && error.code === "invalid_argument");
+  }
+  assert.equal(coordinator.calls.length, 0);
+});
+
+test("processWithdrawal reports progress and finishes at broadcast without waiting for finality", async () => {
+  const coordinator = scriptedFetch([
+    jsonResponse(success(attempt({ approval_reference: approval }))),
+    jsonResponse(success(signedAttempt({ approval_reference: approval }))),
+    jsonResponse(success(signedAttempt({ approval_reference: approval }))),
+  ]);
+  const gateway = scriptedFetch([jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID,
+    state: "mempool", accepted: true, already_known: false }))]);
+  const statuses = [];
+  const status = await client(coordinator.fetch, gateway.fetch).processWithdrawal(input,
+    { pollIntervalMs: 1, waitTimeoutMs: 200, onStatus: (item) => statuses.push(item.state) });
+  assert.equal(status.state, "broadcast");
+  assert.deepEqual(statuses, ["accepted", "broadcast"]);
+});
+
+test("processWithdrawal timeout includes the durable attempt and last error", async () => {
+  const fetch = async () => jsonResponse(success(attempt({ approval_reference: approval,
+    state: "planning", error: { code: "planner_timeout", message: "planner retrying", retryable: true } })));
+  await assert.rejects(client(fetch).processWithdrawal(input, { pollIntervalMs: 1, waitTimeoutMs: 8 }), (error) => {
+    assert.ok(isExchangeSdkError(error));
+    assert.equal(error.code, "withdrawal_wait_timeout");
+    assert.equal(error.details.attempt_id, ATTEMPT_ID);
+    assert.equal(error.details.internal_state, "planning");
+    assert.equal(error.details.attempt_error.code, "planner_timeout");
+    return true;
+  });
+});
+
+test("a stalled authToken provider is bounded by the request timeout", async () => {
+  const exchange = new JunoExchangeClient({
+    coordinator: { baseUrl: "https://coordinator.example", network: "regtest", authToken: () => new Promise(() => {}),
+      fetch: scriptedFetch([]).fetch, retry: { maxAttempts: 1 } },
+    gateway: { baseUrl: "https://gateway.example", fetch: scriptedFetch([]).fetch },
+  });
+  await assert.rejects(exchange.submitWithdrawal(input, { timeoutMs: 5 }),
+    (error) => isExchangeSdkError(error) && error.code === "client_timeout");
+});

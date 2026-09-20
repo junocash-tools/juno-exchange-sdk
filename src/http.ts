@@ -153,7 +153,18 @@ export class HttpClient {
       if (serializedBody !== undefined) headers.set("Content-Type", "application/json");
       if (idempotencyKey !== undefined) headers.set("Idempotency-Key", idempotencyKey);
       if (requestId !== undefined) headers.set("X-Request-ID", requestId);
-      const token = await resolveAuthToken(this.#authToken);
+      let token: string | undefined;
+      try {
+        token = await resolveAuthToken(this.#authToken, controller.signal);
+      } catch (cause) {
+        if (timedOut) {
+          throw new ExchangeSdkError("Juno API request timed out while resolving authToken", {
+            code: "client_timeout", retryable: true, operation: request.operation, cause,
+          });
+        }
+        if (isSignalAborted(request.signal)) throw abortedError(request.operation, request.signal?.reason);
+        throw cause;
+      }
       if (token !== undefined) headers.set("Authorization", `Bearer ${token}`);
 
       let response: Response;
@@ -273,9 +284,20 @@ function joinUrl(base: URL, path: string): string {
 
 async function resolveAuthToken(
   tokenOrProvider: string | AuthTokenProvider | undefined,
+  signal: AbortSignal,
 ): Promise<string | undefined> {
   if (tokenOrProvider === undefined) return undefined;
-  const value = typeof tokenOrProvider === "function" ? await tokenOrProvider() : tokenOrProvider;
+  const value = typeof tokenOrProvider === "function"
+    ? await new Promise<string>((resolve, reject) => {
+      const onAbort = (): void => reject(new Error("authToken resolution aborted"));
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+      Promise.resolve().then(() => tokenOrProvider()).then(
+        (token) => { signal.removeEventListener("abort", onAbort); resolve(token); },
+        (error) => { signal.removeEventListener("abort", onAbort); reject(error); },
+      );
+    })
+    : tokenOrProvider;
   if (
     typeof value !== "string" ||
     value === "" ||

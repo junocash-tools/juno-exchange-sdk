@@ -22,7 +22,7 @@ if (!approvalReference || !toAddress || !amountZat) {
         toAddress,
         amountZat,
       },
-      { pollIntervalMs: 1_000, waitTimeoutMs: 10 * 60_000 },
+      { pollIntervalMs: 1_000, waitTimeoutMs: 2 * 60_000 },
     );
     process.stdout.write(
       `${JSON.stringify({

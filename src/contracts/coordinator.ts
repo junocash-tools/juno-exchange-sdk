@@ -87,7 +87,18 @@ export interface CreateAttemptOptions extends RequestOptions {}
 export interface GetAttemptOptions extends RequestOptions {
   readonly requestId?: string;
 }
+
+export interface ListActiveAttemptsOptions extends RequestOptions {
+  readonly requestId?: string;
+}
+
+export interface ActiveTransactionAttempts {
+  readonly walletId: string;
+  readonly attempts: readonly TransactionAttempt[];
+}
 export interface CancelAttemptOptions extends RequestOptions {
   readonly requestId?: string;
 }
-export interface CreateRawTransactionOptions extends PollOptions {}
+export interface CreateRawTransactionOptions extends PollOptions {
+  readonly onStatus?: (attempt: TransactionAttempt) => void;
+}
