@@ -7,7 +7,7 @@ The SDK does not hold keys, scan the chain, select notes, calculate fees, or sig
 ## Install
 
 ```sh
-npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.3.0/junocash-tools-exchange-sdk-0.3.0.tgz
+npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.3.1/junocash-tools-exchange-sdk-0.3.1.tgz
 ```
 
 Node.js 20 or later is required. The versioned GitHub Release archive is the supported public distribution. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
@@ -43,7 +43,7 @@ await withdrawals.save({
 });
 ```
 
-`submitWithdrawal` returns as soon as the coordinator has durably accepted or replayed the withdrawal. It does not wait for signing, broadcast, mining, or finality, so one exchange worker is not blocked by an earlier attempt. Persist both IDs before acknowledging the job.
+`submitWithdrawal` returns as soon as the coordinator has durably accepted or replayed the withdrawal. It does not wait for signing, broadcast, mining, or finality, so one exchange worker is not blocked by an earlier attempt. Persist both IDs before acknowledging the job. The idempotency namespace belongs to the coordinator and gateway credential principals, so rotate tokens under the same configured principals and do not switch credential names during an uncertain retry.
 
 Run one idempotent progression step from a durable worker:
 
@@ -58,9 +58,9 @@ const status = await exchange.advanceWithdrawal({
 
 The SDK derives the coordinator approval reference plus creation and broadcast idempotency keys from `withdrawalId`. The ID must contain 1–96 ASCII letters, digits, `_`, or `-`, starting with a letter or digit. Reusing an ID with the same immutable request recovers the same attempt and broadcast result. Reusing it with a different wallet, destination, amount, or memo returns an idempotency conflict. Idempotency remains enforced; it is hidden rather than removed.
 
-`advanceWithdrawal` reports an exchange-facing state: `accepted`, `signing`, `ready_to_broadcast`, `broadcast`, `mined`, `confirmed`, `blocked`, or `failed`. When exact signed material is ready, it re-reads the expiry-checked attempt and broadcasts it. A successful idempotent replay where the node already knows the tx is also returned as `broadcast`.
+`advanceWithdrawal` reports an exchange-facing state: `accepted`, `signing`, `ready_to_broadcast`, `broadcast`, `mined`, `confirmed`, `blocked`, or `failed`. The exact coordinator lifecycle remains available as `internalState`, including `orphaned`, `expired_pending_reconciliation`, `released`, and `cancelled`. When exact signed material is ready, it re-reads the expiry-checked attempt and broadcasts it. A successful idempotent replay where the node already knows the tx is also returned as `broadcast`. The high-level helper is a convenience path and broadcasts as soon as the coordinator exposes valid signed material; use the low-level flow below when the exchange must persist and approve the signed result before submission.
 
-For a simple bounded process-local flow, use `processWithdrawal`. It polls at one second by default, has a strict two-minute total wait, reports each state through `onStatus`, and returns after broadcast rather than waiting for confirmations. A timeout includes the durable attempt ID and latest coordinator state/error; it never cancels or replaces the server attempt.
+For a simple bounded process-local flow, use `processWithdrawal`. It polls at one second by default, has a strict two-minute total wait, reports each state through `onStatus`, and returns after broadcast rather than waiting for confirmations. A timeout includes the durable attempt ID and latest coordinator state/error when a status was observed; it never cancels or replaces the server attempt. The lower-level HTTP `timeoutMs` is a request-wide deadline, including retries.
 
 Use `walletId`, not `addressFrom`. A shielded spend consumes notes owned by a registered wallet/UFVK; it cannot reliably spend “from” one visible address. The private coordinator selects eligible notes, reserves them, applies policy, builds the transaction, and invokes the protected signer.
 

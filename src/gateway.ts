@@ -151,12 +151,27 @@ function parseBroadcastResult(value: unknown): BroadcastTransactionResult {
   const record = asRecord(value, "broadcast result");
   const walletId = requireString(record, "wallet_id");
   validateWalletId(walletId);
+  const state = requireString(record, "state");
+  if (!["mempool", "confirmed", "known"].includes(state)) {
+    throw invalidResponse("broadcast state is invalid");
+  }
+  const accepted = requireBoolean(record, "accepted");
+  const alreadyKnown = requireBoolean(record, "already_known");
+  if (accepted && alreadyKnown) {
+    throw invalidResponse("broadcast result flags do not match its state");
+  }
+  if (accepted && state !== "mempool") {
+    throw invalidResponse("accepted broadcasts must report mempool state");
+  }
+  if (!accepted && !alreadyKnown) {
+    throw invalidResponse("broadcast result must be accepted or already known");
+  }
   return {
     walletId,
     txid: validateResponseTxid(record.txid),
-    state: requireString(record, "state"),
-    accepted: requireBoolean(record, "accepted"),
-    alreadyKnown: requireBoolean(record, "already_known"),
+    state,
+    accepted,
+    alreadyKnown,
   };
 }
 

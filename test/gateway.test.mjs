@@ -332,7 +332,7 @@ test("broadcast retries only named safe gateway failures with an identical body"
       }),
       503,
     ),
-    jsonResponse(success(broadcastResult({ already_known: true }))),
+    jsonResponse(success(broadcastResult({ accepted: false, already_known: true }))),
   ]);
   const client = new GatewayClient({
     baseUrl,
@@ -381,6 +381,24 @@ test("broadcast does not retry an unspecified HTTP 500 failure", async () => {
       return true;
     },
   );
+  assert.equal(mock.calls.length, 1);
+});
+
+test("retry backoff cannot exceed the request-wide timeout", async () => {
+  const mock = scriptedFetch([
+    jsonResponse(failure({ code: "rate_limited", message: "try later", retryable: true }), 429, { "Retry-After": "1" }),
+  ]);
+  const client = new GatewayClient({
+    baseUrl,
+    fetch: mock.fetch,
+    retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2_000 },
+  });
+  await assert.rejects(client.broadcast({
+    idempotencyKey: "withdrawal-1842-timeout",
+    walletId: WALLET_ID,
+    rawTxHex: "00aabbcc",
+    expectedTxid: TXID,
+  }, { timeoutMs: 5 }), (error) => isExchangeSdkError(error) && error.code === "client_timeout");
   assert.equal(mock.calls.length, 1);
 });
 

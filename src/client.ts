@@ -10,8 +10,10 @@ import { ExchangeSdkError, isExchangeSdkError } from "./errors.js";
 import { GatewayClient } from "./gateway.js";
 import { abortableDelay } from "./http.js";
 import type { ExchangeClientOptions, RequestOptions } from "./types.js";
+import { validateWalletId } from "./validation.js";
 
 const withdrawalIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/;
+const maxTimerMs = 2_147_483_647;
 
 function withdrawalKeys(withdrawalId: string): { approvalReference: string; createKey: string; broadcastKey: string } {
   if (typeof withdrawalId !== "string" || !withdrawalIdPattern.test(withdrawalId)) {
@@ -26,17 +28,22 @@ function withdrawalKeys(withdrawalId: string): { approvalReference: string; crea
   };
 }
 
-function publicStatus(attempt: TransactionAttempt, withdrawalId: string): WithdrawalStatus {
+function publicStatus(attempt: TransactionAttempt, withdrawalId: string, expectedWalletId?: string): WithdrawalStatus {
   if (attempt.approvalReference !== withdrawalKeys(withdrawalId).approvalReference) {
     throw new ExchangeSdkError("attempt approval reference does not match withdrawalId", {
+      code: "invalid_response", retryable: false,
+    });
+  }
+  if (expectedWalletId !== undefined && attempt.walletId !== expectedWalletId) {
+    throw new ExchangeSdkError("attempt wallet does not match withdrawal input", {
       code: "invalid_response", retryable: false,
     });
   }
   const states: Record<string, WithdrawalState> = {
     planning: "accepted", reserved: "signing", signing: "signing", signing_unknown: "blocked",
     signed: "ready_to_broadcast", broadcast: "broadcast", mined: "mined", final: "confirmed",
-    orphaned: "blocked", expired_pending_reconciliation: "blocked", released: "failed",
-    failed_unsigned: "failed", cancelled: "failed",
+    orphaned: "blocked", expired_pending_reconciliation: "blocked",
+    released: "failed", failed_unsigned: "failed", cancelled: "failed",
   };
   const state = states[attempt.state];
   if (state === undefined) {
@@ -63,6 +70,15 @@ function positiveInteger(value: number, field: string): number {
   return value;
 }
 
+function boundedTimer(value: number, field: string): number {
+  if (value > maxTimerMs) {
+    throw new ExchangeSdkError(`${field} must not exceed ${maxTimerMs} milliseconds`, {
+      code: "invalid_argument", retryable: false,
+    });
+  }
+  return value;
+}
+
 export class JunoExchangeClient {
   readonly coordinator: CoordinatorClient;
   readonly gateway: GatewayClient;
@@ -75,14 +91,15 @@ export class JunoExchangeClient {
   /** Accept/replay immediately. Persist the attempt ID and run advanceWithdrawal in a durable worker. */
   async submitWithdrawal(input: WithdrawalInput, options: RequestOptions = {}): Promise<WithdrawalStatus> {
     const keys = withdrawalKeys(input.withdrawalId);
+    const walletId = validateWalletId(input.walletId);
     const attempt = await this.coordinator.createAttempt({
       idempotencyKey: keys.createKey,
-      walletId: input.walletId,
+      walletId,
       approvalReference: keys.approvalReference,
       outputs: [{ toAddress: input.toAddress, amountZat: input.amountZat,
         ...(input.memoHex === undefined ? {} : { memoHex: input.memoHex }) }],
     }, options);
-    return publicStatus(attempt, input.withdrawalId);
+    return publicStatus(attempt, input.withdrawalId, walletId);
   }
 
   /** Inspect an existing attempt without creating or broadcasting a transaction. */
@@ -93,21 +110,25 @@ export class JunoExchangeClient {
 
   /** One idempotent progression step. Do not replace this with a fresh ID after uncertainty. */
   async advanceWithdrawal(input: WithdrawalInput, options: RequestOptions = {}): Promise<WithdrawalStatus> {
-    const status = await this.submitWithdrawal(input, options);
+    const walletId = validateWalletId(input.walletId);
+    const normalizedInput = input.walletId === walletId ? input : { ...input, walletId };
+    const status = await this.submitWithdrawal(normalizedInput, options);
     if (status.state !== "ready_to_broadcast") return status;
     // Re-read signed material through the expiry-checked coordinator route.
     const signed = await this.coordinator.getAttempt(status.attemptId, options);
-    const current = publicStatus(signed, input.withdrawalId);
+    const current = publicStatus(signed, normalizedInput.withdrawalId, walletId);
     if (current.state !== "ready_to_broadcast") return current;
-    if (!signed.rawTxHex || !signed.txid || signed.walletId !== input.walletId ||
-        signed.orchardOutputActionIndices?.length !== 1) {
+    const outputIndices = signed.orchardOutputActionIndices;
+    const changeIndex = signed.orchardChangeActionIndex;
+    if (!signed.rawTxHex || !signed.txid || signed.walletId !== walletId ||
+        outputIndices?.length !== 1 || (changeIndex !== undefined && changeIndex !== null && changeIndex === outputIndices[0])) {
       throw new ExchangeSdkError("signed attempt is missing broadcast or output-mapping data", {
         code: "invalid_response", retryable: false,
         details: { attempt_id: status.attemptId },
       });
     }
     const broadcast = await this.gateway.broadcast({
-      idempotencyKey: withdrawalKeys(input.withdrawalId).broadcastKey,
+      idempotencyKey: withdrawalKeys(normalizedInput.withdrawalId).broadcastKey,
       walletId: signed.walletId, rawTxHex: signed.rawTxHex, expectedTxid: signed.txid,
     }, options);
     if ((!broadcast.accepted && !broadcast.alreadyKnown) || broadcast.txid !== signed.txid || broadcast.walletId !== signed.walletId) {
@@ -121,9 +142,9 @@ export class JunoExchangeClient {
 
   /** Bounded convenience loop; a timeout leaves the durable attempt active. */
   async processWithdrawal(input: WithdrawalInput, options: ProcessWithdrawalOptions = {}): Promise<WithdrawalStatus> {
-    const interval = positiveInteger(options.pollIntervalMs ?? 1_000, "pollIntervalMs");
-    const wait = positiveInteger(options.waitTimeoutMs ?? 2 * 60_000, "waitTimeoutMs");
-    const timeout = positiveInteger(options.timeoutMs ?? 30_000, "timeoutMs");
+    const interval = boundedTimer(positiveInteger(options.pollIntervalMs ?? 1_000, "pollIntervalMs"), "pollIntervalMs");
+    const wait = boundedTimer(positiveInteger(options.waitTimeoutMs ?? 2 * 60_000, "waitTimeoutMs"), "waitTimeoutMs");
+    const timeout = boundedTimer(positiveInteger(options.timeoutMs ?? 30_000, "timeoutMs"), "timeoutMs");
     const deadline = Date.now() + wait;
     const controller = new AbortController();
     let timedOut = false;

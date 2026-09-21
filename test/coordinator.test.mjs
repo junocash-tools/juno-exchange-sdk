@@ -247,6 +247,23 @@ test("createRawTransaction timeout leaves the coordinator attempt active", async
   assert.ok(calls >= 1);
 });
 
+test("createRawTransaction rejects timer values that Node would clamp", async () => {
+  const mock = scriptedFetch([]);
+  const client = new CoordinatorClient({ baseUrl, fetch: mock.fetch });
+  const input = {
+    idempotencyKey: "withdrawal-timer-limit",
+    walletId: WALLET_ID,
+    approvalReference: APPROVAL_REFERENCE,
+    toAddress: junoAddress(),
+    amountZat: "250000",
+  };
+  for (const options of [{ pollIntervalMs: 2_147_483_648 }, { waitTimeoutMs: 2_147_483_648 }]) {
+    await assert.rejects(client.createRawTransaction(input, options),
+      (error) => isExchangeSdkError(error) && error.code === "invalid_argument");
+  }
+  assert.equal(mock.calls.length, 0);
+});
+
 test("createRawTransaction honors AbortSignal while polling", async () => {
   const mock = scriptedFetch([jsonResponse(success(attempt({ state: "planning" })))]);
   const controller = new AbortController();

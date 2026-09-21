@@ -31,6 +31,7 @@ const defaults = Object.freeze({
   baseDelayMs: 250,
   maxDelayMs: 5_000,
 });
+const maxTimerMs = 2_147_483_647;
 
 interface NormalizedRetryOptions {
   readonly maxAttempts: number;
@@ -71,7 +72,7 @@ export class HttpClient {
     if (!request.path.startsWith("/") || request.path.startsWith("//")) {
       throw invalidArgument("request path must start with one slash");
     }
-    const timeoutMs = positiveInteger(request.timeoutMs ?? this.#defaultTimeoutMs, "timeoutMs");
+    const timeoutMs = boundedTimer(positiveInteger(request.timeoutMs ?? this.#defaultTimeoutMs, "timeoutMs"), "timeoutMs");
     const idempotencyKey =
       request.idempotencyKey === undefined
         ? undefined
@@ -79,12 +80,15 @@ export class HttpClient {
     const requestId = validateRequestId(request.requestId);
     const serializedBody = request.body === undefined ? undefined : serializeBody(request.body);
 
+    const deadline = Date.now() + timeoutMs;
     let lastError: ExchangeSdkError | undefined;
     for (let attempt = 1; attempt <= this.#retry.maxAttempts; attempt += 1) {
       try {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) throw requestTimeoutError(request.operation);
         const payload = await this.#requestOnce(
           request,
-          timeoutMs,
+          remainingMs,
           serializedBody,
           idempotencyKey,
           requestId,
@@ -116,7 +120,9 @@ export class HttpClient {
           ...(error.status === undefined ? {} : { status: error.status }),
           delayMs,
         });
-        await abortableDelay(delayMs, request.signal, request.operation);
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) throw requestTimeoutError(request.operation);
+        await abortableDelay(Math.min(delayMs, remainingMs), request.signal, request.operation);
       }
     }
     throw (
@@ -143,10 +149,7 @@ export class HttpClient {
     let timedOut = false;
     const onAbort = (): void => controller.abort(request.signal?.reason);
     request.signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
+    const deadline = Date.now() + timeoutMs;
 
     try {
       const headers = new Headers({ Accept: "application/json" });
@@ -155,7 +158,19 @@ export class HttpClient {
       if (requestId !== undefined) headers.set("X-Request-ID", requestId);
       let token: string | undefined;
       try {
-        token = await resolveAuthToken(this.#authToken, controller.signal);
+        token = await withDeadline(
+          () => resolveAuthToken(this.#authToken, controller.signal),
+          deadline,
+          request.signal,
+          () => {
+            timedOut = true;
+            controller.abort();
+          },
+          () => new ExchangeSdkError("Juno API request timed out while resolving authToken", {
+            code: "client_timeout", retryable: true, operation: request.operation,
+          }),
+          () => abortedError(request.operation, request.signal?.reason),
+        );
       } catch (cause) {
         if (timedOut) {
           throw new ExchangeSdkError("Juno API request timed out while resolving authToken", {
@@ -169,12 +184,24 @@ export class HttpClient {
 
       let response: Response;
       try {
-        response = await this.#fetch(joinUrl(this.#baseUrl, request.path), {
-          method: request.method,
-          headers,
-          signal: controller.signal,
-          ...(serializedBody === undefined ? {} : { body: serializedBody }),
-        });
+        response = await withDeadline(
+          () => this.#fetch(joinUrl(this.#baseUrl, request.path), {
+            method: request.method,
+            headers,
+            signal: controller.signal,
+            ...(serializedBody === undefined ? {} : { body: serializedBody }),
+          }),
+          deadline,
+          request.signal,
+          () => {
+            timedOut = true;
+            controller.abort();
+          },
+          () => new ExchangeSdkError("Juno API request timed out", {
+            code: "client_timeout", retryable: true, operation: request.operation,
+          }),
+          () => abortedError(request.operation, request.signal?.reason),
+        );
       } catch (cause) {
         if (timedOut) {
           throw new ExchangeSdkError("Juno API request timed out", {
@@ -198,11 +225,23 @@ export class HttpClient {
       const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
       let payload: unknown;
       try {
-        payload = await readJsonResponse(
-          response,
-          this.#maxResponseBytes,
-          request.operation,
-          request.losslessIntegerKeys,
+        payload = await withDeadline(
+          () => readJsonResponse(
+            response,
+            this.#maxResponseBytes,
+            request.operation,
+            request.losslessIntegerKeys,
+          ),
+          deadline,
+          request.signal,
+          () => {
+            timedOut = true;
+            controller.abort();
+          },
+          () => new ExchangeSdkError("Juno API response timed out", {
+            code: "client_timeout", retryable: true, operation: request.operation,
+          }),
+          () => abortedError(request.operation, request.signal?.reason),
         );
       } catch (cause) {
         if (isExchangeSdkError(cause)) throw cause;
@@ -234,7 +273,6 @@ export class HttpClient {
       }
       return payload;
     } finally {
-      clearTimeout(timer);
       request.signal?.removeEventListener("abort", onAbort);
     }
   }
@@ -249,11 +287,67 @@ export class HttpClient {
   }
 }
 
+async function withDeadline<T>(
+  operation: () => Promise<T>,
+  deadline: number,
+  signal: AbortSignal | undefined,
+  onTimeout: () => void,
+  timeoutError: () => ExchangeSdkError,
+  abortError: () => ExchangeSdkError,
+): Promise<T> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    onTimeout();
+    throw timeoutError();
+  }
+  let operationPromise: Promise<T>;
+  try {
+    operationPromise = operation();
+  } catch (error) {
+    throw error;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onSignal: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    if (signal !== undefined) {
+      onSignal = () => reject(abortError());
+      signal.addEventListener("abort", onSignal, { once: true });
+    }
+  });
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout();
+      reject(timeoutError());
+    }, remaining);
+  });
+  try {
+    return await Promise.race([operationPromise, aborted, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onSignal !== undefined && signal !== undefined) signal.removeEventListener("abort", onSignal);
+  }
+}
+
 function positiveInteger(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw invalidArgument(`${field} must be a positive safe integer`);
   }
   return value;
+}
+
+function boundedTimer(value: number, field: string): number {
+  if (value > maxTimerMs) throw invalidArgument(`${field} must not exceed ${maxTimerMs} milliseconds`);
+  return value;
+}
+
+function requestTimeoutError(operation: string): ExchangeSdkError {
+  return new ExchangeSdkError("Juno API request timed out", {
+    code: "client_timeout", retryable: true, operation,
+  });
 }
 
 function normalizeRetry(value: RetryOptions | undefined): NormalizedRetryOptions {

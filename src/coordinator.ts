@@ -59,6 +59,7 @@ const terminalFailureStates = new Set([
   "expired_pending_reconciliation",
   "released",
 ]);
+const maxTimerMs = 2_147_483_647;
 
 export class CoordinatorClient {
   readonly #http: HttpClient;
@@ -180,8 +181,8 @@ export class CoordinatorClient {
     input: CreateRawTransactionInput,
     options: CreateRawTransactionOptions = {},
   ): Promise<SignedTransaction> {
-    const pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 1_000, "pollIntervalMs");
-    const waitTimeoutMs = positiveInteger(options.waitTimeoutMs ?? 2 * 60_000, "waitTimeoutMs");
+    const pollIntervalMs = boundedTimer(positiveInteger(options.pollIntervalMs ?? 1_000, "pollIntervalMs"), "pollIntervalMs");
+    const waitTimeoutMs = boundedTimer(positiveInteger(options.waitTimeoutMs ?? 2 * 60_000, "waitTimeoutMs"), "waitTimeoutMs");
     const deadline = Date.now() + waitTimeoutMs;
     const controller = new AbortController();
     let timedOut = false;
@@ -482,6 +483,11 @@ function optionalNullableIndex(
 
 function positiveInteger(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) throw invalidArgument(`${field} must be positive`);
+  return value;
+}
+
+function boundedTimer(value: number, field: string): number {
+  if (value > maxTimerMs) throw invalidArgument(`${field} must not exceed ${maxTimerMs} milliseconds`);
   return value;
 }
 

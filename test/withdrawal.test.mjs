@@ -43,7 +43,7 @@ test("advanceWithdrawal broadcasts only exact expiry-checked signed material wit
   ]);
   const gateway = scriptedFetch([
     jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID, state: "mempool", accepted: true, already_known: false })),
-    jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID, state: "mempool", accepted: true, already_known: true })),
+    jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID, state: "mempool", accepted: false, already_known: true })),
   ]);
   const exchange = client(coordinator.fetch, gateway.fetch);
   const first = await exchange.advanceWithdrawal(input);
@@ -65,7 +65,8 @@ test("advanceWithdrawal does not broadcast signing uncertainty or expired materi
       error: { code: "signer_unavailable", message: "outcome unknown", retryable: true } }))) ]);
     const gateway = scriptedFetch([]);
     const status = await client(coordinator.fetch, gateway.fetch).advanceWithdrawal(input);
-    assert.equal(status.state, state === "failed_unsigned" ? "failed" : "blocked");
+    const expected = state === "failed_unsigned" ? "failed" : "blocked";
+    assert.equal(status.state, expected);
     assert.equal(status.error.code, "signer_unavailable");
     assert.equal(gateway.calls.length, 0);
   }
@@ -124,9 +125,34 @@ test("processWithdrawal timeout includes the durable attempt and last error", as
 });
 
 test("a stalled authToken provider is bounded by the request timeout", async () => {
+  const mock = scriptedFetch([]);
   const exchange = new JunoExchangeClient({
     coordinator: { baseUrl: "https://coordinator.example", network: "regtest", authToken: () => new Promise(() => {}),
-      fetch: scriptedFetch([]).fetch, retry: { maxAttempts: 1 } },
+      fetch: mock.fetch, retry: { maxAttempts: 1 } },
+    gateway: { baseUrl: "https://gateway.example", fetch: scriptedFetch([]).fetch },
+  });
+  await assert.rejects(exchange.submitWithdrawal(input, { timeoutMs: 5 }),
+    (error) => isExchangeSdkError(error) && error.code === "client_timeout");
+  assert.equal(mock.calls.length, 0);
+});
+
+test("an auth provider that finishes after the deadline does not start fetch", async () => {
+  const mock = scriptedFetch([]);
+  const exchange = new JunoExchangeClient({
+    coordinator: { baseUrl: "https://coordinator.example", network: "regtest",
+      authToken: () => new Promise((resolve) => setTimeout(() => resolve("late-token"), 20)),
+      fetch: mock.fetch, retry: { maxAttempts: 1 } },
+    gateway: { baseUrl: "https://gateway.example", fetch: scriptedFetch([]).fetch },
+  });
+  await assert.rejects(exchange.submitWithdrawal(input, { timeoutMs: 5 }),
+    (error) => isExchangeSdkError(error) && error.code === "client_timeout");
+  assert.equal(mock.calls.length, 0);
+});
+
+test("a custom fetch that ignores AbortSignal is still bounded by the request timeout", async () => {
+  const exchange = new JunoExchangeClient({
+    coordinator: { baseUrl: "https://coordinator.example", network: "regtest",
+      fetch: () => new Promise(() => {}), retry: { maxAttempts: 1 } },
     gateway: { baseUrl: "https://gateway.example", fetch: scriptedFetch([]).fetch },
   });
   await assert.rejects(exchange.submitWithdrawal(input, { timeoutMs: 5 }),
