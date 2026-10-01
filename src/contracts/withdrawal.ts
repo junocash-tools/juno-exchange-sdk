@@ -37,3 +37,16 @@ export interface ProcessWithdrawalOptions extends RequestOptions {
   readonly waitTimeoutMs?: number;
   readonly onStatus?: (status: WithdrawalStatus) => void;
 }
+
+export interface NoteSplitInput {
+  /** Stable exchange ID for this split; reuse it on every retry. */
+  readonly splitId: string;
+  readonly walletId: string;
+  /** Number of equal notes to create, from 2 to 199. */
+  readonly noteCount: number;
+  readonly noteZat: ZatoshiAmount;
+}
+
+export interface NoteSplitStatus extends Omit<WithdrawalStatus, "withdrawalId"> {
+  readonly splitId: string;
+}

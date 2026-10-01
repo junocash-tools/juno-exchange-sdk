@@ -6,6 +6,8 @@ export interface CoordinatorPaths {
   readonly cancelAttempt: (attemptId: string) => string;
   /** Falls back to the standard coordinator route when omitted. */
   readonly activeAttempts?: (walletId: string) => string;
+  /** Falls back to the standard coordinator route when omitted. */
+  readonly noteInventory?: (walletId: string) => string;
 }
 
 export interface GatewayPaths {
@@ -23,6 +25,8 @@ export const DEFAULT_COORDINATOR_PATHS: Readonly<Required<CoordinatorPaths>> = O
     `/v1/transaction-attempts/${encodePathSegment(attemptId, "attemptId")}/cancel`,
   activeAttempts: (walletId: string) =>
     `/v1/wallets/${encodePathSegment(walletId, "walletId")}/transaction-attempts/active`,
+  noteInventory: (walletId: string) =>
+    `/v1/wallets/${encodePathSegment(walletId, "walletId")}/note-inventory`,
 });
 
 export const DEFAULT_GATEWAY_PATHS: Readonly<Required<GatewayPaths>> = Object.freeze({

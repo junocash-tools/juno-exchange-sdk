@@ -9,6 +9,7 @@ import {
 import {
   APPROVAL_REFERENCE,
   ATTEMPT_ID,
+  NOTE_ID,
   PLAN_DIGEST,
   TXID,
   WALLET_ID,
@@ -529,4 +530,100 @@ test("signed state is rejected when reconciliation fields are incomplete", async
       return true;
     },
   );
+});
+
+test("createNoteSplit sends a split request with a stable key and no outputs", async () => {
+  const mock = scriptedFetch([jsonResponse(success(attempt({ approval_reference: "split:fanout-1" })))]);
+  const result = await coordinator(mock.fetch).createNoteSplit({
+    idempotencyKey: "split:fanout-1:create",
+    walletId: WALLET_ID,
+    approvalReference: "split:fanout-1",
+    noteCount: 8,
+    noteZat: 25_000_000n,
+  });
+  assert.equal(result.attemptId, ATTEMPT_ID);
+  assert.equal(mock.calls[0].url, "https://coordinator.example/v1/transaction-attempts");
+  assert.equal(mock.calls[0].headers.get("idempotency-key"), "split:fanout-1:create");
+  assert.deepEqual(requestJson(mock.calls[0]), {
+    wallet_id: WALLET_ID,
+    approval_reference: "split:fanout-1",
+    split: { note_count: 8, note_zat: "25000000" },
+  });
+});
+
+test("createNoteSplit rejects bad counts and amounts before any request", async () => {
+  const mock = scriptedFetch([]);
+  for (const [noteCount, noteZat] of [[1, "100"], [200, "100"], [2.5, "100"], [4, "0"], [4, "-1"],
+    [199, 18_446_744_073_709_551_615n]]) {
+    await assert.rejects(
+      coordinator(mock.fetch).createNoteSplit({ idempotencyKey: "split-1", walletId: WALLET_ID,
+        approvalReference: "split:1", noteCount, noteZat }),
+      (error) => isExchangeSdkError(error) && error.code === "invalid_argument",
+    );
+  }
+  assert.equal(mock.calls.length, 0);
+});
+
+function inventory(overrides = {}) {
+  return {
+    wallet_id: WALLET_ID,
+    min_confirmations: 100,
+    min_note_zat: 0,
+    as_of_scanner_height: 2_000,
+    spendable: { note_count: 1, value_zat: 119_780_000 },
+    reserved_spendable: { note_count: 1, value_zat: 119_780_000 },
+    unreserved_spendable: { note_count: 0, value_zat: 0 },
+    target_notes: 8,
+    low_note_inventory: true,
+    change_split_max: 8,
+    reservations: [{
+      note_id: NOTE_ID,
+      attempt_id: ATTEMPT_ID,
+      attempt_state: "signed",
+      expiry_height: 1_234,
+      note_state: "unspent",
+      value_zat: 119_780_000,
+      reserved_at: "2026-09-30T12:00:00Z",
+    }],
+    reservations_complete: true,
+    ...overrides,
+  };
+}
+
+test("getNoteInventory maps reservations across credentials", async () => {
+  const mock = scriptedFetch([jsonResponse(success(inventory()))]);
+  const result = await coordinator(mock.fetch).getNoteInventory(WALLET_ID);
+  assert.equal(mock.calls[0].method, "GET");
+  assert.equal(mock.calls[0].url, `https://coordinator.example/v1/wallets/${WALLET_ID}/note-inventory`);
+  assert.equal(result.spendable.noteCount, 1);
+  assert.equal(result.spendable.valueZat, "119780000");
+  assert.equal(result.unreservedSpendable.noteCount, 0);
+  assert.equal(result.lowNoteInventory, true);
+  assert.deepEqual(result.reservations, [{
+    noteId: NOTE_ID,
+    attemptId: ATTEMPT_ID,
+    attemptState: "signed",
+    expiryHeight: 1_234,
+    noteState: "unspent",
+    valueZat: "119780000",
+    reservedAt: "2026-09-30T12:00:00Z",
+  }]);
+});
+
+test("getNoteInventory fails closed on malformed or mismatched responses", async () => {
+  const bad = [
+    inventory({ wallet_id: "another-wallet" }),
+    inventory({ low_note_inventory: "yes" }),
+    inventory({ spendable: { note_count: -1, value_zat: 0 } }),
+    inventory({ reservations: [{ ...inventory().reservations[0], note_state: "gone" }] }),
+    inventory({ reservations: [{ ...inventory().reservations[0], note_id: "bad" }] }),
+    inventory({ reservations: null }),
+  ];
+  for (const data of bad) {
+    const mock = scriptedFetch([jsonResponse(success(data))]);
+    await assert.rejects(
+      coordinator(mock.fetch).getNoteInventory(WALLET_ID),
+      (error) => isExchangeSdkError(error) && error.code === "invalid_response",
+    );
+  }
 });

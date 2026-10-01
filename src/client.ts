@@ -1,6 +1,8 @@
 import { CoordinatorClient } from "./coordinator.js";
 import type { TransactionAttempt } from "./contracts/coordinator.js";
 import type {
+  NoteSplitInput,
+  NoteSplitStatus,
   ProcessWithdrawalOptions,
   WithdrawalInput,
   WithdrawalState,
@@ -15,22 +17,29 @@ import { validateWalletId } from "./validation.js";
 const withdrawalIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/;
 const maxTimerMs = 2_147_483_647;
 
-function withdrawalKeys(withdrawalId: string): { approvalReference: string; createKey: string; broadcastKey: string } {
-  if (typeof withdrawalId !== "string" || !withdrawalIdPattern.test(withdrawalId)) {
-    throw new ExchangeSdkError("withdrawalId must be 1 to 96 safe characters", {
+interface OperationKeys { approvalReference: string; createKey: string; broadcastKey: string }
+
+function operationKeys(prefix: "withdrawal" | "split", id: string): OperationKeys {
+  if (typeof id !== "string" || !withdrawalIdPattern.test(id)) {
+    throw new ExchangeSdkError(`${prefix === "split" ? "splitId" : "withdrawalId"} must be 1 to 96 safe characters`, {
       code: "invalid_argument", retryable: false,
     });
   }
   return {
-    approvalReference: `withdrawal:${withdrawalId}`,
-    createKey: `withdrawal:${withdrawalId}:create`,
-    broadcastKey: `withdrawal:${withdrawalId}:broadcast`,
+    approvalReference: `${prefix}:${id}`,
+    createKey: `${prefix}:${id}:create`,
+    broadcastKey: `${prefix}:${id}:broadcast`,
   };
 }
 
-function publicStatus(attempt: TransactionAttempt, withdrawalId: string, expectedWalletId?: string): WithdrawalStatus {
-  if (attempt.approvalReference !== withdrawalKeys(withdrawalId).approvalReference) {
-    throw new ExchangeSdkError("attempt approval reference does not match withdrawalId", {
+function withdrawalKeys(withdrawalId: string): OperationKeys {
+  return operationKeys("withdrawal", withdrawalId);
+}
+
+function publicStatus(attempt: TransactionAttempt, withdrawalId: string, expectedWalletId?: string,
+  keys: OperationKeys = withdrawalKeys(withdrawalId)): WithdrawalStatus {
+  if (attempt.approvalReference !== keys.approvalReference) {
+    throw new ExchangeSdkError("attempt approval reference does not match the exchange ID", {
       code: "invalid_response", retryable: false,
     });
   }
@@ -113,22 +122,49 @@ export class JunoExchangeClient {
     const walletId = validateWalletId(input.walletId);
     const normalizedInput = input.walletId === walletId ? input : { ...input, walletId };
     const status = await this.submitWithdrawal(normalizedInput, options);
+    return this.#broadcastIfSigned(status, walletId, withdrawalKeys(normalizedInput.withdrawalId), 1, options);
+  }
+
+  /**
+   * One idempotent step of a note split: create (or replay) the split attempt
+   * and broadcast it once signed. Call again until the state is broadcast or
+   * later. The new notes become spendable after the usual confirmations.
+   */
+  async advanceNoteSplit(input: NoteSplitInput, options: RequestOptions = {}): Promise<NoteSplitStatus> {
+    const keys = operationKeys("split", input.splitId);
+    const walletId = validateWalletId(input.walletId);
+    const attempt = await this.coordinator.createNoteSplit({
+      idempotencyKey: keys.createKey,
+      walletId,
+      approvalReference: keys.approvalReference,
+      noteCount: input.noteCount,
+      noteZat: input.noteZat,
+    }, options);
+    const status = publicStatus(attempt, input.splitId, walletId, keys);
+    const result = await this.#broadcastIfSigned(status, walletId, keys, input.noteCount, options);
+    const { withdrawalId: _ignored, ...rest } = result;
+    return { ...rest, splitId: input.splitId };
+  }
+
+  async #broadcastIfSigned(status: WithdrawalStatus, walletId: string, keys: OperationKeys,
+    expectedOutputs: number, options: RequestOptions): Promise<WithdrawalStatus> {
     if (status.state !== "ready_to_broadcast") return status;
     // Re-read signed material through the expiry-checked coordinator route.
     const signed = await this.coordinator.getAttempt(status.attemptId, options);
-    const current = publicStatus(signed, normalizedInput.withdrawalId, walletId);
+    const current = publicStatus(signed, status.withdrawalId, walletId, keys);
     if (current.state !== "ready_to_broadcast") return current;
     const outputIndices = signed.orchardOutputActionIndices;
     const changeIndex = signed.orchardChangeActionIndex;
     if (!signed.rawTxHex || !signed.txid || signed.walletId !== walletId ||
-        outputIndices?.length !== 1 || (changeIndex !== undefined && changeIndex !== null && changeIndex === outputIndices[0])) {
+        outputIndices?.length !== expectedOutputs ||
+        (changeIndex !== undefined && changeIndex !== null && outputIndices.includes(changeIndex))) {
       throw new ExchangeSdkError("signed attempt is missing broadcast or output-mapping data", {
         code: "invalid_response", retryable: false,
         details: { attempt_id: status.attemptId },
       });
     }
     const broadcast = await this.gateway.broadcast({
-      idempotencyKey: withdrawalKeys(normalizedInput.withdrawalId).broadcastKey,
+      idempotencyKey: keys.broadcastKey,
       walletId: signed.walletId, rawTxHex: signed.rawTxHex, expectedTxid: signed.txid,
     }, options);
     if ((!broadcast.accepted && !broadcast.alreadyKnown) || broadcast.txid !== signed.txid || broadcast.walletId !== signed.walletId) {

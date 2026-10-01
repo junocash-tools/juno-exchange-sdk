@@ -2,11 +2,16 @@ import type {
   CancelAttemptOptions,
   ActiveTransactionAttempts,
   CreateAttemptOptions,
+  CreateNoteSplitInput,
   CreateRawTransactionInput,
   CreateRawTransactionOptions,
   CreateTransactionAttemptInput,
   GetAttemptOptions,
+  GetNoteInventoryOptions,
   ListActiveAttemptsOptions,
+  NoteInventory,
+  NoteReservation,
+  NoteValueSummary,
   SignedTransaction,
   TransactionAttempt,
   TransactionOutputInput,
@@ -25,6 +30,8 @@ import {
   normalizePositiveZatoshi,
   optionalNonNegativeInteger,
   optionalString,
+  requireBoolean,
+  requireNonNegativeInteger,
   requireString,
   validateAddress,
   validateApprovalReference,
@@ -36,6 +43,7 @@ import {
   validateResponseAttemptId,
   validateResponseRawTxHex,
   validateResponseTxid,
+  validateResponseZatoshi,
   validateUnsignedDecimal,
   validateWalletId,
 } from "./validation.js";
@@ -73,6 +81,7 @@ export class CoordinatorClient {
       attempt: options.paths?.attempt ?? DEFAULT_COORDINATOR_PATHS.attempt,
       cancelAttempt: options.paths?.cancelAttempt ?? DEFAULT_COORDINATOR_PATHS.cancelAttempt,
       activeAttempts: options.paths?.activeAttempts ?? DEFAULT_COORDINATOR_PATHS.activeAttempts,
+      noteInventory: options.paths?.noteInventory ?? DEFAULT_COORDINATOR_PATHS.noteInventory,
     });
     this.#network = options.network;
   }
@@ -102,6 +111,68 @@ export class CoordinatorClient {
       retryMode: "idempotent_mutation",
     });
     return parseAttempt(unwrapSuccessEnvelope(payload).data);
+  }
+
+  /**
+   * Fan wallet funds out into `noteCount` equal notes owned by the same wallet.
+   * The result is an ordinary attempt: wait for `signed`, then broadcast the
+   * raw transaction through the gateway like a withdrawal.
+   */
+  async createNoteSplit(
+    input: CreateNoteSplitInput,
+    options: CreateAttemptOptions = {},
+  ): Promise<TransactionAttempt> {
+    const noteCount = input.noteCount;
+    if (!Number.isSafeInteger(noteCount) || noteCount < 2 || noteCount > 199) {
+      throw invalidArgument("noteCount must be an integer from 2 to 199");
+    }
+    const noteZat = normalizePositiveZatoshi(input.noteZat, "noteZat");
+    if (BigInt(noteZat) * BigInt(noteCount) > 18_446_744_073_709_551_615n) {
+      throw invalidArgument("noteCount * noteZat exceeds the uint64 range");
+    }
+    const requestId = validateRequestId(input.requestId);
+    const payload = await this.#http.request({
+      method: "POST",
+      path: this.#paths.attempts,
+      operation: "coordinator.create_note_split",
+      body: {
+        wallet_id: validateWalletId(input.walletId),
+        approval_reference: validateApprovalReference(input.approvalReference),
+        split: { note_count: noteCount, note_zat: noteZat },
+      },
+      idempotencyKey: validateIdempotencyKey(input.idempotencyKey),
+      ...(requestId === undefined ? {} : { requestId }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      retryMode: "idempotent_mutation",
+    });
+    return parseAttempt(unwrapSuccessEnvelope(payload).data);
+  }
+
+  /**
+   * Spendable, reserved and unreserved note counts for a wallet, plus every
+   * active reservation across all coordinator credentials.
+   */
+  async getNoteInventory(
+    walletId: string,
+    options: GetNoteInventoryOptions = {},
+  ): Promise<NoteInventory> {
+    const normalizedWalletId = validateWalletId(walletId);
+    const requestId = validateRequestId(options.requestId);
+    const payload = await this.#http.request({
+      method: "GET",
+      path: this.#paths.noteInventory(normalizedWalletId),
+      operation: "coordinator.get_note_inventory",
+      ...(requestId === undefined ? {} : { requestId }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      retryMode: "read",
+    });
+    const inventory = parseNoteInventory(unwrapSuccessEnvelope(payload).data);
+    if (inventory.walletId !== normalizedWalletId) {
+      throw invalidResponse("wallet_id does not match the requested wallet");
+    }
+    return inventory;
   }
 
   async getAttempt(
@@ -326,6 +397,59 @@ function parseAttempt(value: unknown): TransactionAttempt {
     ...(attemptError === undefined ? {} : { error: attemptError }),
     createdAt,
     updatedAt,
+  };
+}
+
+function parseNoteInventory(value: unknown): NoteInventory {
+  const record = asRecord(value, "note inventory");
+  const reservationsValue = record.reservations;
+  if (!Array.isArray(reservationsValue) || reservationsValue.length > 5_000) {
+    throw invalidResponse("reservations must be an array with at most 5000 entries");
+  }
+  const reservations = reservationsValue.map(parseNoteReservation);
+  return {
+    walletId: validateWalletId(requireString(record, "wallet_id")),
+    minConfirmations: requireNonNegativeInteger(record, "min_confirmations"),
+    minNoteZat: validateResponseZatoshi(record.min_note_zat, "min_note_zat"),
+    asOfScannerHeight: requireNonNegativeInteger(record, "as_of_scanner_height"),
+    spendable: parseNoteValueSummary(record.spendable, "spendable"),
+    reservedSpendable: parseNoteValueSummary(record.reserved_spendable, "reserved_spendable"),
+    unreservedSpendable: parseNoteValueSummary(record.unreserved_spendable, "unreserved_spendable"),
+    targetNotes: requireNonNegativeInteger(record, "target_notes"),
+    lowNoteInventory: requireBoolean(record, "low_note_inventory"),
+    changeSplitMax: requireNonNegativeInteger(record, "change_split_max"),
+    reservations,
+    reservationsComplete: requireBoolean(record, "reservations_complete"),
+  };
+}
+
+function parseNoteValueSummary(value: unknown, field: string): NoteValueSummary {
+  const record = asRecord(value, field);
+  return {
+    noteCount: requireNonNegativeInteger(record, "note_count"),
+    valueZat: validateResponseZatoshi(record.value_zat, `${field}.value_zat`),
+  };
+}
+
+const noteStates = new Set(["unknown", "unspent", "pending", "spent"]);
+
+function parseNoteReservation(value: unknown): NoteReservation {
+  const record = asRecord(value, "note reservation");
+  const noteIds = optionalNoteIds({ note_id: [requireString(record, "note_id")] }, "note_id");
+  const noteState = requireString(record, "note_state");
+  if (!noteStates.has(noteState)) throw invalidResponse("note_state is not a known note state");
+  const expiryHeight = optionalNonNegativeInteger(record, "expiry_height");
+  const valueZat = record.value_zat === undefined || record.value_zat === null
+    ? undefined
+    : validateResponseZatoshi(record.value_zat, "value_zat");
+  return {
+    noteId: noteIds![0]!,
+    attemptId: validateResponseAttemptId(requireString(record, "attempt_id")),
+    attemptState: requireString(record, "attempt_state"),
+    ...(expiryHeight === undefined || expiryHeight === 0 ? {} : { expiryHeight }),
+    noteState: noteState as NoteReservation["noteState"],
+    ...(valueZat === undefined ? {} : { valueZat }),
+    reservedAt: requireTimestamp(record, "reserved_at"),
   };
 }
 

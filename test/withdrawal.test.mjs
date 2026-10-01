@@ -158,3 +158,44 @@ test("a custom fetch that ignores AbortSignal is still bounded by the request ti
   await assert.rejects(exchange.submitWithdrawal(input, { timeoutMs: 5 }),
     (error) => isExchangeSdkError(error) && error.code === "client_timeout");
 });
+
+test("advanceNoteSplit creates the split under stable keys and broadcasts once signed", async () => {
+  const splitInput = { splitId: "fanout-1", walletId: WALLET_ID, noteCount: 3, noteZat: "1000000" };
+  const signed = signedAttempt({ approval_reference: "split:fanout-1",
+    orchard_output_action_indices: [0, 2, 3], orchard_change_action_index: 1 });
+  const coordinator = scriptedFetch([jsonResponse(success(signed)), jsonResponse(success(signed))]);
+  const gateway = scriptedFetch([
+    jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID, state: "mempool", accepted: true, already_known: false })),
+  ]);
+  const status = await client(coordinator.fetch, gateway.fetch).advanceNoteSplit(splitInput);
+  assert.equal(status.state, "broadcast");
+  assert.equal(status.splitId, "fanout-1");
+  assert.equal(status.withdrawalId, undefined);
+  assert.equal(coordinator.calls[0].headers.get("idempotency-key"), "split:fanout-1:create");
+  assert.deepEqual(requestJson(coordinator.calls[0]), {
+    wallet_id: WALLET_ID, approval_reference: "split:fanout-1",
+    split: { note_count: 3, note_zat: "1000000" },
+  });
+  assert.equal(gateway.calls[0].headers.get("idempotency-key"), "split:fanout-1:broadcast");
+});
+
+test("advanceNoteSplit refuses to broadcast when the output mapping does not match the split", async () => {
+  const splitInput = { splitId: "fanout-2", walletId: WALLET_ID, noteCount: 3, noteZat: "1000000" };
+  const signed = signedAttempt({ approval_reference: "split:fanout-2",
+    orchard_output_action_indices: [0, 2], orchard_change_action_index: 1 });
+  const coordinator = scriptedFetch([jsonResponse(success(signed)), jsonResponse(success(signed))]);
+  const gateway = scriptedFetch([]);
+  await assert.rejects(client(coordinator.fetch, gateway.fetch).advanceNoteSplit(splitInput),
+    (error) => isExchangeSdkError(error) && error.code === "invalid_response");
+  assert.equal(gateway.calls.length, 0);
+});
+
+test("advanceWithdrawal leaves notes_reserved attempts accepted for the next pass", async () => {
+  const coordinator = scriptedFetch([jsonResponse(success(attempt({ approval_reference: approval,
+    state: "planning", error: { code: "notes_reserved", message: "eligible notes are reserved", retryable: true } })))]);
+  const gateway = scriptedFetch([]);
+  const status = await client(coordinator.fetch, gateway.fetch).advanceWithdrawal(input);
+  assert.equal(status.state, "accepted");
+  assert.equal(status.error.code, "notes_reserved");
+  assert.equal(gateway.calls.length, 0);
+});

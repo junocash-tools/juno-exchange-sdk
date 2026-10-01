@@ -7,7 +7,7 @@ The SDK does not hold keys, scan the chain, select notes, calculate fees, or sig
 ## Install
 
 ```sh
-npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.3.1/junocash-tools-exchange-sdk-0.3.1.tgz
+npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.4.0/junocash-tools-exchange-sdk-0.4.0.tgz
 ```
 
 Node.js 20 or later is required. The versioned GitHub Release archive is the supported public distribution. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
@@ -131,7 +131,7 @@ console.log({
 
 All returned zatoshi values are canonical decimal strings and are decoded without JavaScript number rounding. `minNoteZat` accepts a decimal string or `bigint`; JavaScript `number` is rejected. `minConfirmations` must be an integer from `0` through `10000`. Omit either option to use the gateway's configured default. When comparing the result with a future plan, use the same values as `JUNO_GATEWAY_DEFAULT_CONFIRMATIONS` and `JUNO_COORDINATOR_MIN_NOTE_ZAT`; their shipped defaults are `100` and `0`.
 
-Treat `spendable.valueZat` as a liquidity signal, not a withdrawal authorization or reservation. Exact funding still depends on the requested amount, fee, input limit, and active coordinator reservations, so `createRawTransaction` remains authoritative. Save the snapshot height and hash with monitoring records when consistent point-in-time reconciliation matters.
+Treat `spendable.valueZat` as a liquidity signal, not a withdrawal authorization or reservation. Exact funding still depends on the requested amount, fee, input limit, and active coordinator reservations, so `createRawTransaction` remains authoritative. `spendable` does not subtract notes that active coordinator attempts have already reserved; use `coordinator.getNoteInventory(walletId)` for that view. Save the snapshot height and hash with monitoring records when consistent point-in-time reconciliation matters.
 
 The packaged `examples/get-wallet-balance.mjs` is runnable without application code:
 
@@ -170,7 +170,40 @@ A local wait timeout does not cancel the server-side attempt. Store `attemptId` 
 
 Common states are `planning`, `reserved`, `signing`, `signing_unknown`, `signed`, `broadcast`, `mined`, `final`, `failed_unsigned`, `expired_pending_reconciliation`, `orphaned`, `released`, and `cancelled`. The client keeps polling through `signing_unknown`; if the local wait times out, query the same attempt later and never create a replacement spend until the coordinator resolves it.
 
-For on-demand diagnostics, `coordinator.listActiveAttempts(walletId)` lists active attempts and note reservations owned by that exact coordinator credential. It never returns signed raw bytes. It is not a preflight call required before each withdrawal; use it only to explain blocked wallet liquidity. An operator must inspect attempts owned by other credentials.
+For on-demand diagnostics, `coordinator.listActiveAttempts(walletId)` lists active attempts and note reservations owned by that exact coordinator credential. It never returns signed raw bytes. It is not a preflight call required before each withdrawal; use it only to explain blocked wallet liquidity. `getNoteInventory` covers every credential.
+
+## Note inventory
+
+Orchard notes are spent whole. While an attempt is in flight, every note it selected is reserved, and its change only comes back after the transaction is mined. A hot wallet holding one large note can therefore fund one withdrawal at a time.
+
+`coordinator.getNoteInventory(walletId)` shows what the coordinator can plan with right now:
+
+```js
+const inventory = await coordinator.getNoteInventory("hot-wallet-1");
+console.log({
+  spendable: inventory.spendable.noteCount,
+  reserved: inventory.reservedSpendable.noteCount,
+  free: inventory.unreservedSpendable.noteCount,
+  low: inventory.lowNoteInventory,
+});
+```
+
+`reservations` lists every active reservation across all coordinator credentials with the owning attempt ID and state. `lowNoteInventory` is true when free notes drop below the coordinator's `JUNO_COORDINATOR_TARGET_NOTES`. It is advisory; alert on it rather than gating withdrawals.
+
+When every eligible note is held by another attempt, a new withdrawal stays `accepted` with error code `notes_reserved` and resumes on its own once a note is released. Only a wallet that genuinely cannot fund the request fails with `insufficient_balance`.
+
+With `JUNO_COORDINATOR_TARGET_NOTES` set, the coordinator splits withdrawal change into several notes while the wallet is below target, so inventory recovers without extra work. To fan out funds on demand, run a split:
+
+```js
+const split = await exchange.advanceNoteSplit({
+  splitId: "fanout-2026-10-01",
+  walletId: "hot-wallet-1",
+  noteCount: 8,
+  noteZat: "25000000",
+});
+```
+
+Call `advanceNoteSplit` again with the same `splitId` until the state is `broadcast` or later; it uses the same create and broadcast keys each time. The new notes become spendable after the usual confirmations. `coordinator.createNoteSplit` is the low-level equivalent that returns the attempt without broadcasting.
 
 ## Idempotency and retries
 
