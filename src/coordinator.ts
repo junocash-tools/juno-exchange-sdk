@@ -294,7 +294,7 @@ export class CoordinatorClient {
       attempt = await this.getAttempt(attempt.attemptId, requestOptions(options, controller.signal, deadline));
     }
     } catch (error) {
-      if (!timedOut || options.signal?.aborted || !(error instanceof ExchangeSdkError) ||
+      if (!(timedOut || Date.now() >= deadline) || options.signal?.aborted || !(error instanceof ExchangeSdkError) ||
           (error.code !== "client_aborted" && error.code !== "client_timeout")) throw error;
     } finally {
       clearTimeout(timer);

@@ -190,12 +190,37 @@ test("advanceNoteSplit refuses to broadcast when the output mapping does not mat
   assert.equal(gateway.calls.length, 0);
 });
 
-test("advanceWithdrawal leaves notes_reserved attempts accepted for the next pass", async () => {
+test("advanceWithdrawal reports notes_reserved as a terminal retryable failure", async () => {
   const coordinator = scriptedFetch([jsonResponse(success(attempt({ approval_reference: approval,
-    state: "planning", error: { code: "notes_reserved", message: "eligible notes are reserved", retryable: true } })))]);
+    state: "failed_unsigned", error: { code: "notes_reserved", message: "eligible notes are reserved", retryable: true } })))]);
   const gateway = scriptedFetch([]);
   const status = await client(coordinator.fetch, gateway.fetch).advanceWithdrawal(input);
-  assert.equal(status.state, "accepted");
+  assert.equal(status.state, "failed");
+  assert.equal(status.internalState, "failed_unsigned");
   assert.equal(status.error.code, "notes_reserved");
+  assert.equal(status.error.retryable, true);
+  assert.equal(status.txid, null);
   assert.equal(gateway.calls.length, 0);
+});
+
+test("withdrawal status always carries txid, expiryHeight and error", async () => {
+  const coordinator = scriptedFetch([
+    jsonResponse(success(attempt({ approval_reference: approval, state: "planning" }))),
+    jsonResponse(success(signedAttempt({ approval_reference: approval }))),
+    jsonResponse(success(signedAttempt({ approval_reference: approval }))),
+  ]);
+  const gateway = scriptedFetch([jsonResponse(success({ wallet_id: WALLET_ID, txid: TXID,
+    state: "mempool", accepted: true, already_known: false }))]);
+  const exchange = client(coordinator.fetch, gateway.fetch);
+  const accepted = await exchange.advanceWithdrawal(input);
+  assert.equal(accepted.state, "accepted");
+  for (const key of ["txid", "expiryHeight", "error"]) {
+    assert.ok(Object.hasOwn(accepted, key), key);
+    assert.equal(accepted[key], null);
+  }
+  const broadcast = await exchange.advanceWithdrawal(input);
+  assert.equal(broadcast.state, "broadcast");
+  assert.equal(broadcast.txid, TXID);
+  assert.equal(typeof broadcast.expiryHeight, "number");
+  assert.equal(broadcast.error, null);
 });

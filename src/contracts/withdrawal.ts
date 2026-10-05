@@ -26,9 +26,12 @@ export interface WithdrawalStatus {
   readonly walletId: string;
   readonly state: WithdrawalState;
   readonly internalState: string;
-  readonly error?: TransactionAttemptError;
-  readonly txid?: string;
-  readonly expiryHeight?: number;
+  /** Always present. Null unless the attempt recorded an error. */
+  readonly error: TransactionAttemptError | null;
+  /** Always present. Null before signing; set from ready_to_broadcast onward. */
+  readonly txid: string | null;
+  /** Always present. Null before a plan is reserved. */
+  readonly expiryHeight: number | null;
   readonly updatedAt: string;
 }
 

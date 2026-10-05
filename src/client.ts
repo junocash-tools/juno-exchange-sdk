@@ -63,9 +63,9 @@ function publicStatus(attempt: TransactionAttempt, withdrawalId: string, expecte
   return {
     withdrawalId, attemptId: attempt.attemptId, walletId: attempt.walletId,
     state, internalState: attempt.state,
-    ...(attempt.error === undefined ? {} : { error: attempt.error }),
-    ...(attempt.txid === undefined ? {} : { txid: attempt.txid }),
-    ...(attempt.expiryHeight === undefined ? {} : { expiryHeight: attempt.expiryHeight }),
+    error: attempt.error ?? null,
+    txid: attempt.txid ?? null,
+    expiryHeight: attempt.expiryHeight ?? null,
     updatedAt: attempt.updatedAt,
   };
 }
@@ -200,7 +200,7 @@ export class JunoExchangeClient {
         await abortableDelay(Math.min(interval, Math.max(1, deadline - Date.now())), controller.signal, "exchange.process_withdrawal");
       }
     } catch (error) {
-      if (!timedOut || options.signal?.aborted || !isExchangeSdkError(error) ||
+      if (!(timedOut || Date.now() >= deadline) || options.signal?.aborted || !isExchangeSdkError(error) ||
           (error.code !== "client_aborted" && error.code !== "client_timeout")) throw error;
     } finally {
       clearTimeout(timer);

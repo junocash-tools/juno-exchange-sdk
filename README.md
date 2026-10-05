@@ -7,7 +7,7 @@ The SDK does not hold keys, scan the chain, select notes, calculate fees, or sig
 ## Install
 
 ```sh
-npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.4.0/junocash-tools-exchange-sdk-0.4.0.tgz
+npm install https://github.com/junocash-tools/juno-exchange-sdk/releases/download/v0.4.1/junocash-tools-exchange-sdk-0.4.1.tgz
 ```
 
 Node.js 20 or later is required. The versioned GitHub Release archive is the supported public distribution. ESM, CommonJS, and TypeScript declarations are included. The package has no runtime dependencies and sends no telemetry.
@@ -59,6 +59,19 @@ const status = await exchange.advanceWithdrawal({
 The SDK derives the coordinator approval reference plus creation and broadcast idempotency keys from `withdrawalId`. The ID must contain 1–96 ASCII letters, digits, `_`, or `-`, starting with a letter or digit. Reusing an ID with the same immutable request recovers the same attempt and broadcast result. Reusing it with a different wallet, destination, amount, or memo returns an idempotency conflict. Idempotency remains enforced; it is hidden rather than removed.
 
 `advanceWithdrawal` reports an exchange-facing state: `accepted`, `signing`, `ready_to_broadcast`, `broadcast`, `mined`, `confirmed`, `blocked`, or `failed`. The exact coordinator lifecycle remains available as `internalState`, including `orphaned`, `expired_pending_reconciliation`, `released`, and `cancelled`. When exact signed material is ready, it re-reads the expiry-checked attempt and broadcasts it. A successful idempotent replay where the node already knows the tx is also returned as `broadcast`. The high-level helper is a convenience path and broadcasts as soon as the coordinator exposes valid signed material; use the low-level flow below when the exchange must persist and approve the signed result before submission.
+
+Every status object has the same keys. `txid`, `expiryHeight`, and `error` are always present and are `null` when they do not apply yet:
+
+| `state` | `txid` | `expiryHeight` | `error` |
+| --- | --- | --- | --- |
+| `accepted` | `null` | `null` | `null`, or the last retryable planning error |
+| `signing` | `null` | set once notes are reserved | `null`, or the last retryable signer error |
+| `ready_to_broadcast` | set | set | `null` |
+| `broadcast`, `mined`, `confirmed` | set | set | `null` |
+| `blocked` | set when the attempt was signed | set when the attempt was planned | set when the coordinator recorded a cause |
+| `failed` | `null` unless the attempt was signed | set when the attempt was planned | set when the coordinator recorded a cause |
+
+`txid` is never `null` from `ready_to_broadcast` onward. A `failed` status is terminal for that `withdrawalId`: calling again with the same ID replays the same failure. When `error.retryable` is `true`, retry the payout with a new `withdrawalId`.
 
 For a simple bounded process-local flow, use `processWithdrawal`. It polls at one second by default, has a strict two-minute total wait, reports each state through `onStatus`, and returns after broadcast rather than waiting for confirmations. A timeout includes the durable attempt ID and latest coordinator state/error when a status was observed; it never cancels or replaces the server attempt. The lower-level HTTP `timeoutMs` is a request-wide deadline, including retries.
 
@@ -190,7 +203,7 @@ console.log({
 
 `reservations` lists every active reservation across all coordinator credentials with the owning attempt ID and state. `lowNoteInventory` is true when free notes drop below the coordinator's `JUNO_COORDINATOR_TARGET_NOTES`. It is advisory; alert on it rather than gating withdrawals.
 
-When every eligible note is held by another attempt, a new withdrawal stays `accepted` with error code `notes_reserved` and resumes on its own once a note is released. Only a wallet that genuinely cannot fund the request fails with `insufficient_balance`.
+When every eligible note is held by another attempt, the withdrawal fails right away: state `failed`, error code `notes_reserved`, `retryable: true`. The failed attempt holds no notes and never resumes, and calling again with the same `withdrawalId` returns the same failure. Retry with a new `withdrawalId` once a note is released. A wallet that genuinely cannot fund the request fails with `insufficient_balance`, which is not retryable.
 
 With `JUNO_COORDINATOR_TARGET_NOTES` set, the coordinator splits withdrawal change into several notes while the wallet is below target, so inventory recovers without extra work. To fan out funds on demand, run a split:
 

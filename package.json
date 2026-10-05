@@ -1,6 +1,6 @@
 {
   "name": "@junocash-tools/exchange-sdk",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Typed Node.js client for Juno exchange transaction coordination and gateway APIs",
   "license": "MIT",
   "repository": {
